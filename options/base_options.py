@@ -57,6 +57,12 @@ class BaseOptions():
         parser.add_argument('--load_iter', type=int, default='0', help='which iteration to load? if load_iter > 0, the code will load models by iter_[load_iter]; otherwise, the code will load models by [epoch]')
         parser.add_argument('--verbose', action='store_true', help='if specified, print more debugging information')
         parser.add_argument('--suffix', default='', type=str, help='customized suffix: opt.name = opt.name + suffix: e.g., {model}_{netG}_size{load_size}')
+        
+        # HealthiVert-specific parameters (previously hardcoded)
+        parser.add_argument('--vertebra_json', type=str, default='./vertebra_data.json', help='path to vertebra_data.json file with train/val/test splits')
+        parser.add_argument('--cam_folder', type=str, default='./heatmaps', help='path to folder containing Grad-CAM heatmaps')
+        parser.add_argument('--vert_class', type=str, default='abnormal', help='vertebra class to use [normal | abnormal]')
+        
         # wandb parameters
         parser.add_argument('--use_wandb', action='store_true', help='if specified, then init wandb logging')
         parser.add_argument('--wandb_project_name', type=str, default='CycleGAN-and-pix2pix', help='specify wandb project name')

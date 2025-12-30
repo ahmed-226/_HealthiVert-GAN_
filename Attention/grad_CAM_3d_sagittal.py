@@ -1,8 +1,31 @@
+"""
+Step 2: Generate Grad-CAM++ attention heatmaps for HGAM module
+This script generates attention maps using a pre-trained classifier to guide
+the generator to focus on healthy vertebra regions.
+
+Usage:
+    python grad_CAM_3d_sagittal.py --ckpt-path <classifier_checkpoint> --dataroot <straightened_CT_path> --output-folder <heatmap_output>
+    
+    For untrained model (testing pipeline only):
+    python grad_CAM_3d_sagittal.py --dataroot <straightened_CT_path> --output-folder <heatmap_output> --use-untrained
+
+Expected input:
+    dataroot/
+        CT/
+            patient_vertebra.nii.gz
+
+Output:
+    output-folder/
+        patient_vertebra.nii.gz  (3D heatmap)
+        patient_vertebra.png     (visualization)
+"""
+
 import torch
 import torch.nn.functional as F
 from torch.autograd import Function
-from model import Seresnet50_Contrastive
-from utils import CustomLogger, calculate_confusion_matrix
+# Commented out - these are custom modules that may not exist
+# from model import Seresnet50_Contrastive
+# from utils import CustomLogger, calculate_confusion_matrix
 import os
 import cv2
 from PIL import Image
@@ -13,6 +36,7 @@ from monai.networks.nets import SEresnet50
 from pathlib import Path
 import nibabel as nib
 import random
+import argparse
 
 class GradCam:
     def __init__(self, model, feature_layer):
@@ -156,11 +180,18 @@ def apply_heatmap_to_grayscale_and_save(heatmap, image, save_path, alpha=0.4, co
     print(f"Image saved to {save_path}")
 
 
-def process_and_save_nii(dataroot, output_folder, grad_cam, target_class=1):
-    folder_path = Path(os.path.join(dataroot, 'test'))
+def process_and_save_nii(dataroot, output_folder, grad_cam, target_class=1, sample_limit=None):
+    folder_path = Path(os.path.join(dataroot, 'CT'))
+    if not os.path.exists(os.path.join(dataroot, 'CT')):
+        folder_path = Path(os.path.join(dataroot, 'test'))
     if not os.path.exists(os.path.join(dataroot, 'test')):
         folder_path = Path(dataroot)
     nii_files = list(folder_path.rglob('*.nii.gz'))
+    
+    # Apply sample limit if specified
+    if sample_limit is not None and sample_limit < len(nii_files):
+        nii_files = nii_files[:sample_limit]
+        print(f"[Sample Test Mode] Processing only {len(nii_files)} files")
 
     transform = transforms.Compose([
         transforms.ToPILImage(),
@@ -200,25 +231,52 @@ def process_and_save_nii(dataroot, output_folder, grad_cam, target_class=1):
     
 
 
-# 使用示例
-torch.cuda.set_device(0)
-ckpt_path = '/home/zhangqi/Project/VertebralFractureGrading/ckpt/binary_straighten_0406_sagittal'
-checkpoint = torch.load(os.path.join(ckpt_path,"best_ckpt_41136_0.9758208075449455.tar"),
-                                    map_location=torch.device('cuda', 0))
-model = SEresnet50(spatial_dims=2, in_channels=1, num_classes=2)  # 根据实际情况初始化你的模型
-model = torch.nn.DataParallel(model).cuda()
+def parse_args():
+    parser = argparse.ArgumentParser(description='Generate Grad-CAM++ attention heatmaps for HGAM module')
+    parser.add_argument('--ckpt-path', type=str, default=None,
+                        help='Path to classifier checkpoint file (.tar). If not provided with --use-untrained, will use random weights.')
+    parser.add_argument('--dataroot', type=str, required=True,
+                        help='Path to straightened CT data folder')
+    parser.add_argument('--output-folder', type=str, required=True,
+                        help='Path to output folder for heatmaps')
+    parser.add_argument('--target-class', type=int, default=1,
+                        help='Target class for Grad-CAM (0=healthy, 1=fractured, default: 1)')
+    parser.add_argument('--use-untrained', action='store_true',
+                        help='Use untrained MONAI SEResNet50 (for pipeline testing only, results will be meaningless)')
+    parser.add_argument('--gpu', type=int, default=0,
+                        help='GPU device ID (default: 0)')
+    parser.add_argument('--sample-test', type=int, default=None,
+                        help='Sample test mode: process only N files (for pipeline testing)')
+    return parser.parse_args()
 
-model.load_state_dict(checkpoint['state_dict'])
-target_layers = [model.module.layer4[-1]]
 
-#grad_cam = GradCam(model=model, feature_layer="module.layer4.2.conv1.conv")  # 确保feature_layer与模型中的层名称相匹配
-#grad_cam = GradCAM(model=model, target_layers=target_layers)
-grad_cam = GradCamPlusPlus(model=model, feature_layer="module.layer4.2.conv1.conv")
-
-#dataroot = '/home/zhangqi/Project/pytorch-CycleGAN-and-pix2pix-master/datasets/straighten/revised/binaryclass'
-dataroot = '/home/zhangqi/Project/pytorch-CycleGAN-and-pix2pix-master/datasets/local/straighten/CT'
-target_class=1
-
-#output_folder = f'/home/zhangqi/Project/VertebralFractureGrading/heatmap/straighten_sagittal/binaryclass_{target_class}'
-output_folder = f'/home/zhangqi/Project/VertebralFractureGrading/heatmap/local_sagittal_0508/binaryclass_{target_class}'
-process_and_save_nii(dataroot, output_folder, grad_cam, target_class=target_class)
+if __name__ == '__main__':
+    args = parse_args()
+    
+    torch.cuda.set_device(args.gpu)
+    
+    # Initialize model
+    model = SEresnet50(spatial_dims=2, in_channels=1, num_classes=2)
+    model = torch.nn.DataParallel(model).cuda()
+    
+    # Load checkpoint if provided
+    if args.ckpt_path and not args.use_untrained:
+        print(f"Loading checkpoint from: {args.ckpt_path}")
+        checkpoint = torch.load(args.ckpt_path, map_location=torch.device('cuda', args.gpu))
+        model.load_state_dict(checkpoint['state_dict'])
+        print("Checkpoint loaded successfully.")
+    elif args.use_untrained:
+        print("WARNING: Using untrained model. Heatmaps will be random/meaningless!")
+        print("This is only for testing the pipeline. Train a classifier for real results.")
+    else:
+        print("WARNING: No checkpoint provided and --use-untrained not set.")
+        print("Using untrained model. Heatmaps will be random/meaningless!")
+    
+    # Setup Grad-CAM++
+    target_layers = [model.module.layer4[-1]]
+    grad_cam = GradCamPlusPlus(model=model, feature_layer="module.layer4.2.conv1.conv")
+    
+    # Process and save
+    process_and_save_nii(args.dataroot, args.output_folder, grad_cam, 
+                         target_class=args.target_class, sample_limit=args.sample_test)
+    print(f"Heatmaps saved to: {args.output_folder}")

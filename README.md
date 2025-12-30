@@ -150,6 +150,28 @@ python evaluation/generation_eval_sagittal.py
 ```
 ---
 
+```bash
+# Step 1: Generate JSON centroids
+python straighten/location_json_local.py --input-dir datasets/raw
+
+# Step 2: Straighten volumes
+python straighten/straighten_mask_3d.py --data-folder datasets/raw --json-path vertebra_data.json --output-folder datasets/straightened
+
+# Step 3: Generate attention maps (untrained for testing)
+python Attention/grad_CAM_3d_sagittal.py --dataroot datasets/straightened --output-folder datasets/straightened/heatmap --use-untrained
+
+# Step 4-5: Train/Test GAN
+python train.py --dataroot datasets/straightened --vertebra_json vertebra_data.json --cam_folder heatmap --name exp1
+
+# Step 6-7: Evaluate
+python evaluation/RHLV_quantification.py --label-folder datasets/straightened/label --output-folder results/output --result-folder evaluation/RHLV_quantification --json-path vertebra_data.json
+
+python evaluation/SVM_grading.py --rhlv-folder evaluation/RHLV_quantification --output-folder evaluation/classification_metric
+
+```
+
+---
+
 ## 📊 Results
 
 ### Qualitative Comparison

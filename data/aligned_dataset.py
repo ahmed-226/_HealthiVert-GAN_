@@ -1,5 +1,3 @@
-#假设读入的数据是nii格式的
-
 import os
 from data.base_dataset import BaseDataset, get_params, get_transform
 from data.image_folder import make_dataset
@@ -45,8 +43,9 @@ class AlignedDataset(BaseDataset):
         """
         BaseDataset.__init__(self, opt)
         
-        # 读取json文件来选择训练集、测试集和验证集
-        with open('vertebra_data_local.json', 'r') as file:
+        # Use vertebra_json from options instead of hardcoded path
+        vertebra_json_path = getattr(opt, 'vertebra_json', './vertebra_data.json')
+        with open(vertebra_json_path, 'r') as file:
             vertebra_set = json.load(file)
             self.normal_vert_list = []
             self.abnormal_vert_list = []
@@ -159,7 +158,8 @@ class AlignedDataset(BaseDataset):
             B_paths (str) - - image paths (same as A_paths)
         """
         # read a image given a random integer index
-        CAM_folder = '/temp_data/zhangqi/datasets/HealthiVert_GAN/straighten_local/heatmap_CT'
+        # Use cam_folder from options instead of hardcoded path
+        CAM_folder = getattr(self.opt, 'cam_folder', './heatmaps')
 
         CAM_path_0 = os.path.join(CAM_folder, self.vertebra_id[index]+'_0.nii.gz')
         CAM_path_1 = os.path.join(CAM_folder, self.vertebra_id[index]+'_1.nii.gz')
@@ -168,7 +168,14 @@ class AlignedDataset(BaseDataset):
             CAM_path = CAM_path_1
         if not os.path.exists(CAM_path_1):
             CAM_path = os.path.join(CAM_folder, self.vertebra_id[index]+'.nii.gz')
-        CAM_data = nib.load(CAM_path).get_fdata() * 255
+        
+        # Handle case where CAM file doesn't exist (use zeros)
+        if os.path.exists(CAM_path):
+            CAM_data = nib.load(CAM_path).get_fdata() * 255
+        else:
+            print(f"Warning: CAM file not found: {CAM_path}, using zeros")
+            # Will be set to proper size after loading CT
+            CAM_data = None
         #print(CAM_data.max())
 
         patient_id, vert_id = self.vertebra_id[index].rsplit('_', 1)
@@ -183,6 +190,11 @@ class AlignedDataset(BaseDataset):
         #mask_path = os.path.join(self.dir_AB,"mask",self.vertebra_id[index]+'.nii.gz')
         ct_data = nib.load(ct_path).get_fdata()
         label_data = nib.load(label_path).get_fdata()
+        
+        # Initialize CAM_data to zeros if not loaded
+        if CAM_data is None:
+            CAM_data = np.zeros_like(ct_data)
+        
         vert_label = np.zeros_like(label_data)
         vert_label[label_data==vert_id]=1
 

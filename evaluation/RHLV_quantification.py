@@ -1,3 +1,25 @@
+"""
+RHLV Quantification - Relative Height Loss of Vertebrae Calculation
+
+This script calculates the RHLV metric for evaluating vertebra restoration quality.
+The RHLV is computed for three regions: anterior (pre), middle (mid), and posterior (post).
+
+Usage:
+    python evaluation/RHLV_quantification.py \\
+        --label-folder datasets/straightened/label \\
+        --output-folder results/output \\
+        --result-folder evaluation/RHLV_quantification \\
+        --json-path vertebra_data.json
+
+Arguments:
+    --label-folder   : Ground truth label volumes folder
+    --output-folder  : GAN output folder containing experiment subfolders
+    --result-folder  : Folder to save RHLV Excel results
+    --json-path      : Path to vertebra_data.json (or vertebra_data_local.json)
+    --length-divisor : Divisor for calculating analysis length (default: 5)
+    --height-threshold: Threshold for height filtering (default: 0.7)
+"""
+
 import json
 import numpy as np
 import os
@@ -5,7 +27,28 @@ import nibabel as nib
 import matplotlib.pyplot as plt
 import cv2
 import pandas as pd
+import argparse
 from sklearn.model_selection import ParameterGrid
+
+
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description='Calculate RHLV (Relative Height Loss of Vertebrae) for GAN evaluation'
+    )
+    parser.add_argument('--label-folder', type=str, required=True,
+                        help='Folder containing ground truth label volumes')
+    parser.add_argument('--output-folder', type=str, required=True,
+                        help='GAN output folder containing experiment subfolders')
+    parser.add_argument('--result-folder', type=str, required=True,
+                        help='Folder to save RHLV Excel results')
+    parser.add_argument('--json-path', type=str, required=True,
+                        help='Path to vertebra_data.json file')
+    parser.add_argument('--length-divisor', type=int, default=5,
+                        help='Divisor for calculating analysis length (default: 5)')
+    parser.add_argument('--height-threshold', type=float, default=0.7,
+                        help='Threshold for height filtering (default: 0.7)')
+    return parser.parse_args()
 
 def rotate_image_to_horizontal(binary_image):
     """
@@ -195,18 +238,37 @@ def process_datasets_to_excel(dataset_info, label_folder, fake_folder, output_fi
     df.to_excel(output_file, index=False)
 
 def main():
-    with open('vertebra_data_local.json', 'r') as file:
+    args = parse_args()
+    
+    # Load vertebra data JSON
+    with open(args.json_path, 'r') as file:
        json_data = json.load(file)
     
-    label_folder = '/dssg/home/acct-milesun/zhangqi/Dataset/HealthiVert_straighten/label'
-    output_folder = '/dssg/home/acct-milesun/zhangqi/Project/HealthiVert-GAN_eval/output'
-    result_folder = '/dssg/home/acct-milesun/zhangqi/Project/HealthiVert-GAN_eval/evaluation/RHLV_quantification'
-    for root, dirs, files in os.walk(output_folder):
-        for dir in dirs:
-            exp_folder = os.path.join(root,dir)
-            fake_folder = os.path.join(exp_folder,'label_fake')
-            result_file = os.path.join(result_folder,dir+'.xlsx')
-            process_datasets_to_excel(json_data, label_folder, fake_folder, result_file, length_divisor=5, height_threshold=0.7)
+    # Create result folder if it doesn't exist
+    if not os.path.exists(args.result_folder):
+        os.makedirs(args.result_folder)
+    
+    # Process each experiment folder
+    for root, dirs, files in os.walk(args.output_folder):
+        for dir_name in dirs:
+            exp_folder = os.path.join(root, dir_name)
+            fake_folder = os.path.join(exp_folder, 'label_fake')
+            
+            if not os.path.exists(fake_folder):
+                print(f"Skipping {dir_name}: no label_fake folder found")
+                continue
+                
+            result_file = os.path.join(args.result_folder, dir_name + '.xlsx')
+            print(f"Processing experiment: {dir_name}")
+            process_datasets_to_excel(
+                json_data, 
+                args.label_folder, 
+                fake_folder, 
+                result_file, 
+                length_divisor=args.length_divisor, 
+                height_threshold=args.height_threshold
+            )
+            print(f"  Saved results to: {result_file}")
 
 if __name__ == "__main__":
     main()

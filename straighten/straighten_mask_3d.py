@@ -1,12 +1,34 @@
-#coding:utf-8
 
-# 首先对三维脊柱进行竖直化处理
-# 并且对每个椎体分别单独处理切除其椎弓根
-# 截取三维区域并且保存为nii.gz
-# 保存大小为256 256 64，刚好可以囊括椎体并且看到周围椎体
+"""
+Step 1: Preprocessing - Straighten spine and extract vertebrae volumes
+This script performs:
+1. Spine straightening using curve interpolation
+2. De-pedicle (remove vertebral arch from segmentation)
+3. Extract individual vertebra volumes with masks
+
+Usage:
+    python straighten_mask_3d.py --data-folder <raw_data_path> --json-path <vertebra_data.json> --output-folder <output_path>
+
+Expected input structure:
+    data-folder/
+        patient_id/
+            patient_id.nii.gz       (CT volume)
+            patient_id_seg.nii.gz   (Segmentation mask)
+            patient_id.json         (Centroid coordinates from location_json_local.py)
+
+Output structure:
+    output-folder/
+        CT/
+            patient_id_label.nii.gz
+        label/
+            patient_id_label.nii.gz
+        mask_2d/
+            patient_id_label.nii.gz
+"""
 
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
+import argparse
 import os
 import numpy as np
 import nibabel as nib
@@ -340,14 +362,14 @@ def extract_mask_volume_left(label_data,label):
         
         # 将最小旋转矩形的四个顶点转换为整数坐标
         box = cv2.boxPoints(rect)
-        rect_points = np.int0(box)
+        rect_points = np.intp(box)
         
         # 对该最小矩形进行缩放
         # 缩放因子
         scale_factor = 1.1
         center = rect[0]
         scaled_rect_points = ((rect_points - center) * scale_factor) + center
-        scaled_rect_points = np.int0(scaled_rect_points)
+        scaled_rect_points = np.intp(scaled_rect_points)
         
         # 创建包围椎体的最小矩形
         bbox_image = np.zeros_like(label_data[:,:,0], np.uint8)
@@ -413,17 +435,17 @@ def extract_mask_volume(label_data, label, area_threshold=20):
         contours, _ = cv2.findContours(cleaned_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if contours:
             # 为所有找到的轮廓创建一个覆盖轮廓的最小矩形
-            all_contours = np.vstack(contours[i] for i in range(len(contours)))
+            all_contours = np.vstack([contours[i] for i in range(len(contours))])
             rect = cv2.minAreaRect(all_contours)
             
             box = cv2.boxPoints(rect)
-            rect_points = np.int0(box)
+            rect_points = np.intp(box)
             
             # 对该最小矩形进行缩放
             scale_factor = 1.1
             center = rect[0]
             scaled_rect_points = ((rect_points - center) * scale_factor) + center
-            scaled_rect_points = np.int0(scaled_rect_points)
+            scaled_rect_points = np.intp(scaled_rect_points)
             
             # 创建包围整体轮廓的最小矩形
             bbox_image = np.zeros_like(label_data[:, :, 0], np.uint8)
@@ -528,6 +550,9 @@ def process_mask3d(ct_path,label_path,json_path,vertebrae_ids,output_folder,outp
         # 这里要注意，不嫩那个把所有的json文件中的坐标都输进去，
         # 因为部分坐标是不需要的，要根据label取
         for entry in data:  # Skip the first entry which is 'direction'
+            # Skip entries without 'label' key (like direction entry)
+            if 'label' not in entry:
+                continue
             if entry['label'] == None:
                 continue
             if entry['label'] == label:
@@ -649,25 +674,302 @@ def build_patient_vertebrae_map(json_path):
 
     return category_patient_vertebrae_map
 
-# Example usage
-#data_folder = '/home/zhangqi/environments/Genant_classify/data/revised'  # Update with the actual path to your data
-#json_path = '/home/zhangqi/environments/code/vertebra_data.json'  # Path to the JSON file you've uploaded
-#output_folder = '/home/zhangqi/environments/data/straighten/revised'  # Update with the path where you want to save outputs
 
-data_folder = '/mnt/g/local_dataset/preprocessed/local'  # Update with the actual path to your data
-json_path = '/mnt/g/local_dataset/preprocessed/vertebra_data.json'  # Path to the JSON file you've uploaded
-output_folder = '/mnt/g/local_dataset/preprocessed/straighten'  # Update with the path where you want to save outputs
+def parse_args():
+    parser = argparse.ArgumentParser(description='Straighten spine and extract vertebrae volumes')
+    parser.add_argument('--data-folder', type=str, required=True,
+                        help='Path to folder containing raw CT and segmentation data. '
+                             'Supports two structures:\n'
+                             '  1) Simple: data-folder/patient_id/{CT, mask, json}\n'
+                             '  2) VerSe: data-folder/{rawdata/,derivatives/}')
+    parser.add_argument('--json-path', type=str, default=None,
+                        help='Path to vertebra_data.json file containing train/val/test splits. '
+                             'If not provided, will scan data-folder for all patients.')
+    parser.add_argument('--output-folder', type=str, required=True,
+                        help='Path to output folder for straightened volumes')
+    parser.add_argument('--output-size', type=int, nargs=3, default=[256, 256, 64],
+                        help='Output volume size (default: 256 256 64)')
+    parser.add_argument('--sample-test', type=int, default=None,
+                        help='Sample test mode: process only N patients per category. '
+                             'Use this for pipeline testing without processing full dataset.')
+    parser.add_argument('--verse-mode', action='store_true',
+                        help='Enable VerSe dataset mode. Expects data-folder to contain '
+                             'rawdata/ and derivatives/ subdirectories with separate CT and mask files.')
+    return parser.parse_args()
 
-#data_folder = '/mnt/g/six_local_dataset/local'  # Update with the actual path to your data
-#json_path = '/mnt/g/six_local_dataset/vertebra_data.json'  # Path to the JSON file you've uploaded
-#output_folder = '/mnt/g/six_local_dataset/straighten'  # Update with the path where you want to save outputs
 
-category_patient_vertebrae_map = build_patient_vertebrae_map(json_path)
+def scan_data_folder_for_patients(data_folder):
+    """
+    Scan the data folder directly to find patient folders and their vertebrae.
+    This is an alternative to using vertebra_data.json for testing purposes.
+    
+    Returns:
+        dict: Structure like {'scan': {patient_id: [vertebra_ids]}}
+    """
+    patients = {}
+    
+    for item in os.listdir(data_folder):
+        item_path = os.path.join(data_folder, item)
+        if not os.path.isdir(item_path):
+            continue
+            
+        patient_id = item
+        
+        # Try to find segmentation mask
+        mask_candidates = [
+            os.path.join(item_path, f'{patient_id}_msk.nii.gz'),
+            os.path.join(item_path, f'{patient_id}_seg.nii.gz'),
+            os.path.join(item_path, f'{patient_id}_seg-vert_msk.nii.gz'),
+        ]
+        
+        mask_path = None
+        for candidate in mask_candidates:
+            if os.path.exists(candidate):
+                mask_path = candidate
+                break
+        
+        if mask_path is None:
+            print(f"No mask found for {patient_id}, skipping...")
+            continue
+        
+        # Load mask and find vertebra labels
+        try:
+            mask_data = nib.load(mask_path).get_fdata().astype(np.uint8)
+            labels = np.unique(mask_data)
+            labels = labels[labels != 0]  # Remove background
+            patients[patient_id] = [int(l) for l in labels]
+            print(f"Found patient {patient_id} with {len(labels)} vertebrae: {list(labels)}")
+        except Exception as e:
+            print(f"Error loading mask for {patient_id}: {e}")
+            continue
+    
+    return {'scan': patients}
 
-# Display the map for demonstration
-for category, patients in category_patient_vertebrae_map.items():
-    print(f"Category: {category}")
-    for patient_id, vertebrae_ids in patients.items():
-        print(f"  Patient ID: {patient_id}, Vertebrae IDs: {vertebrae_ids}")
 
-process_data(data_folder,category_patient_vertebrae_map,output_folder)
+def scan_verse_dataset(data_folder):
+    """
+    Scan VerSe-style dataset structure with separate rawdata/ and derivatives/ folders.
+    
+    Expected structure:
+        data_folder/
+        ├── dataset-verse19training/
+        │   ├── rawdata/
+        │   │   └── sub-verse004/
+        │   │       └── sub-verse004_ct.nii
+        │   └── derivatives/
+        │       └── sub-verse004/
+        │           ├── sub-verse004_seg-vert_msk.nii
+        │           └── sub-verse004_seg-vb_ctd.json
+        ├── dataset-verse19validation/
+        └── dataset-verse19test/
+    
+    Returns:
+        dict: Structure like {'training': {patient_id: [vertebra_ids]}, ...}
+        dict: Mapping of patient_id -> {'ct': path, 'mask': path, 'json': path}
+    """
+    category_map = {}
+    file_paths = {}
+    
+    # Find all dataset-verse* subdirectories
+    dataset_dirs = []
+    for item in os.listdir(data_folder):
+        item_path = os.path.join(data_folder, item)
+        if os.path.isdir(item_path):
+            # Check if it's a VerSe-style directory (has rawdata and derivatives)
+            if os.path.exists(os.path.join(item_path, 'rawdata')) and \
+               os.path.exists(os.path.join(item_path, 'derivatives')):
+                dataset_dirs.append((item, item_path))
+    
+    if not dataset_dirs:
+        # Maybe data_folder IS the dataset folder (e.g., dataset-verse19training)
+        if os.path.exists(os.path.join(data_folder, 'rawdata')) and \
+           os.path.exists(os.path.join(data_folder, 'derivatives')):
+            dataset_dirs.append((os.path.basename(data_folder), data_folder))
+    
+    for dataset_name, dataset_path in dataset_dirs:
+        # Determine category name from dataset name
+        category = 'train'
+        if 'validation' in dataset_name.lower():
+            category = 'val'
+        elif 'test' in dataset_name.lower():
+            category = 'test'
+        elif 'training' in dataset_name.lower():
+            category = 'train'
+        
+        rawdata_path = os.path.join(dataset_path, 'rawdata')
+        derivatives_path = os.path.join(dataset_path, 'derivatives')
+        
+        patients = {}
+        
+        # Scan derivatives folder for masks (which tell us which patients exist)
+        for patient_folder in os.listdir(derivatives_path):
+            patient_path = os.path.join(derivatives_path, patient_folder)
+            if not os.path.isdir(patient_path):
+                continue
+            
+            patient_id = patient_folder
+            
+            # Find mask file (handles both normal and split cases)
+            mask_path = None
+            json_path = None
+            ct_path = None
+            
+            for f in os.listdir(patient_path):
+                if f.endswith('_seg-vert_msk.nii') or f.endswith('_seg-vert_msk.nii.gz'):
+                    mask_path = os.path.join(patient_path, f)
+                    # Derive the base name for finding CT
+                    base_name = f.replace('_seg-vert_msk.nii.gz', '').replace('_seg-vert_msk.nii', '')
+                # Check for both centroid JSON formats: seg-vb_ctd and seg-subreg_ctd
+                if f.endswith('_seg-vb_ctd.json') or f.endswith('_seg-subreg_ctd.json'):
+                    json_path = os.path.join(patient_path, f)
+            
+            if mask_path is None:
+                print(f"No mask found for {patient_id} in {dataset_name}, skipping...")
+                continue
+            
+            # Find corresponding CT in rawdata
+            base_name = os.path.basename(mask_path).replace('_seg-vert_msk.nii.gz', '').replace('_seg-vert_msk.nii', '')
+            ct_candidates = [
+                os.path.join(rawdata_path, patient_id, f'{base_name}_ct.nii'),
+                os.path.join(rawdata_path, patient_id, f'{base_name}_ct.nii.gz'),
+                os.path.join(rawdata_path, patient_id, f'{patient_id}_ct.nii'),
+                os.path.join(rawdata_path, patient_id, f'{patient_id}_ct.nii.gz'),
+            ]
+            
+            for candidate in ct_candidates:
+                if os.path.exists(candidate):
+                    ct_path = candidate
+                    break
+            
+            if ct_path is None:
+                # Try finding largest file in patient folder
+                patient_raw_folder = os.path.join(rawdata_path, patient_id)
+                if os.path.exists(patient_raw_folder):
+                    ct_path = find_largest_file(patient_raw_folder)
+            
+            if ct_path is None:
+                print(f"No CT found for {patient_id}/{base_name} in {dataset_name}, skipping...")
+                continue
+            
+            # Load mask to get vertebra labels
+            try:
+                mask_data = nib.load(mask_path).get_fdata().astype(np.uint8)
+                labels = np.unique(mask_data)
+                labels = labels[labels != 0]  # Remove background
+                vertebrae = [int(l) for l in labels]
+                
+                # Use base_name as key to handle split cases
+                patients[base_name] = vertebrae
+                file_paths[base_name] = {
+                    'ct': ct_path,
+                    'mask': mask_path,
+                    'json': json_path
+                }
+                print(f"[{category}] Found {base_name}: {len(vertebrae)} vertebrae")
+            except Exception as e:
+                print(f"Error loading mask for {patient_id}: {e}")
+                continue
+        
+        if patients:
+            category_map[category] = patients
+            print(f"Dataset '{dataset_name}' ({category}): {len(patients)} patients")
+    
+    return category_map, file_paths
+
+
+def process_data_verse(file_paths_map, category_patient_map, output_folder, output_size=(256, 256, 64)):
+    """
+    Process VerSe-style dataset where CT, mask, and JSON paths are pre-computed.
+    """
+    for category, patients in category_patient_map.items():
+        for patient_id, vertebrae_ids in patients.items():
+            if patient_id not in file_paths_map:
+                print(f"No file paths for {patient_id}, skipping...")
+                continue
+            
+            paths = file_paths_map[patient_id]
+            ct_path = paths['ct']
+            mask_path = paths['mask']
+            json_path = paths['json']
+            
+            if not all([ct_path, mask_path, json_path]):
+                print(f"Missing files for {patient_id}: CT={ct_path is not None}, "
+                      f"mask={mask_path is not None}, json={json_path is not None}")
+                continue
+            
+            if not all([os.path.exists(p) for p in [ct_path, mask_path, json_path] if p]):
+                print(f"Files not found for {patient_id}")
+                continue
+            
+            print(f"Processing {patient_id}: CT at {ct_path}")
+            print(f"  Mask: {mask_path}")
+            print(f"  JSON: {json_path}")
+            print(f"  Vertebrae IDs: {vertebrae_ids}")
+            
+            try:
+                process_mask3d(ct_path, mask_path, json_path, vertebrae_ids, output_folder, output_size)
+            except Exception as e:
+                print(f"Error processing {patient_id}: {e}")
+                continue
+
+
+if __name__ == '__main__':
+    args = parse_args()
+    
+    data_folder = args.data_folder
+    output_folder = args.output_folder
+    output_size = tuple(args.output_size)
+    
+    file_paths_map = None  # Only used in VerSe mode
+    
+    # Determine data source and structure
+    if args.verse_mode:
+        # VerSe dataset mode: separate rawdata/ and derivatives/ folders
+        print(f"[VerSe Mode] Scanning dataset at: {data_folder}")
+        category_patient_vertebrae_map, file_paths_map = scan_verse_dataset(data_folder)
+        
+        if not category_patient_vertebrae_map:
+            print("ERROR: No patients found. Make sure data-folder contains "
+                  "rawdata/ and derivatives/ subdirectories, or dataset-verse* folders.")
+            exit(1)
+    elif args.json_path and os.path.exists(args.json_path):
+        # Use provided JSON file
+        print(f"Using vertebra data from: {args.json_path}")
+        category_patient_vertebrae_map = build_patient_vertebrae_map(args.json_path)
+    else:
+        # Simple mode: scan for patient folders with CT + mask + json together
+        print(f"No JSON file provided. Scanning data folder: {data_folder}")
+        category_patient_vertebrae_map = scan_data_folder_for_patients(data_folder)
+    
+    # Apply sample limit if specified
+    if args.sample_test is not None:
+        print(f"\n[Sample Test Mode] Limiting to {args.sample_test} patients per category")
+        limited_map = {}
+        limited_paths = {} if file_paths_map else None
+        
+        for category, patients in category_patient_vertebrae_map.items():
+            patient_list = list(patients.items())[:args.sample_test]
+            limited_map[category] = dict(patient_list)
+            print(f"  Category '{category}': {len(patient_list)} patients selected")
+            
+            # Also limit file_paths_map if in VerSe mode
+            if file_paths_map:
+                for patient_id, _ in patient_list:
+                    if patient_id in file_paths_map:
+                        limited_paths[patient_id] = file_paths_map[patient_id]
+        
+        category_patient_vertebrae_map = limited_map
+        if file_paths_map:
+            file_paths_map = limited_paths
+
+    # Display the map for demonstration
+    for category, patients in category_patient_vertebrae_map.items():
+        print(f"\nCategory: {category}")
+        for patient_id, vertebrae_ids in patients.items():
+            print(f"  Patient ID: {patient_id}, Vertebrae IDs: {vertebrae_ids}")
+
+    # Process data
+    if args.verse_mode and file_paths_map:
+        process_data_verse(file_paths_map, category_patient_vertebrae_map, output_folder, output_size)
+    else:
+        process_data(data_folder, category_patient_vertebrae_map, output_folder)

@@ -1,3 +1,20 @@
+"""
+SVM Grading - Genant Fracture Classification using SVM
+
+This script uses an SVM classifier to perform Genant grading based on RHLV values.
+It performs 5-fold cross-validation and evaluates on a validation set.
+
+Usage:
+    python evaluation/SVM_grading.py \\
+        --rhlv-folder evaluation/RHLV_quantification \\
+        --output-folder evaluation/classification_metric
+
+Arguments:
+    --rhlv-folder   : Folder containing RHLV Excel files
+    --output-folder : Folder to save classification metric results
+    --features      : RHLV features to use (default: Pre,Mid,Post RHLV)
+"""
+
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 from sklearn.svm import SVC
@@ -5,6 +22,22 @@ from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_sc
 from sklearn.preprocessing import StandardScaler
 import numpy as np
 import os
+import argparse
+
+
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description='SVM classifier for Genant fracture grading based on RHLV values'
+    )
+    parser.add_argument('--rhlv-folder', type=str, default='evaluation/RHLV_quantification',
+                        help='Folder containing RHLV Excel files (default: evaluation/RHLV_quantification)')
+    parser.add_argument('--output-folder', type=str, default='evaluation/classification_metric',
+                        help='Folder to save classification results (default: evaluation/classification_metric)')
+    parser.add_argument('--features', type=str, nargs='+', 
+                        default=['Pre RHLV', 'Mid RHLV', 'Post RHLV'],
+                        help='RHLV features to use for classification')
+    return parser.parse_args()
 
 def evaluate_svm(filepath, features, output_txt='evaluation_results.txt'):
     # 加载数据
@@ -79,18 +112,31 @@ def evaluate_svm(filepath, features, output_txt='evaluation_results.txt'):
     print(f"Results saved to {output_txt}")
 
 def main():
-    result_folder = 'evaluation/RHLV_quantification'
-    grading_folder = 'evaluation/classification_metric'
-    if not os.path.exists(grading_folder):
-        os.makedirs(grading_folder)
-    features = ['Pre RHLV', 'Mid RHLV', 'Post RHLV']
-    for xlsx_file in os.listdir(result_folder):
-        #if xlsx_file != 'Exp_1_wo_straighten_sagittal.xlsx':
-        #    continue
-        xlsx_path = os.path.join(result_folder, xlsx_file)
+    args = parse_args()
+    
+    # Create output folder if it doesn't exist
+    if not os.path.exists(args.output_folder):
+        os.makedirs(args.output_folder)
+    
+    # Check if RHLV folder exists
+    if not os.path.exists(args.rhlv_folder):
+        print(f"Error: RHLV folder not found: {args.rhlv_folder}")
+        return
+    
+    # Process each RHLV Excel file
+    xlsx_files = [f for f in os.listdir(args.rhlv_folder) if f.endswith('.xlsx')]
+    
+    if not xlsx_files:
+        print(f"No Excel files found in {args.rhlv_folder}")
+        return
+    
+    for xlsx_file in xlsx_files:
+        xlsx_path = os.path.join(args.rhlv_folder, xlsx_file)
         xlsx_name = xlsx_file.split('.')[0]
-        saveTxT_path = os.path.join(grading_folder, xlsx_name + '.txt')
-        evaluate_svm(xlsx_path, features, saveTxT_path)
+        save_txt_path = os.path.join(args.output_folder, xlsx_name + '.txt')
+        
+        print(f"Evaluating: {xlsx_file}")
+        evaluate_svm(xlsx_path, args.features, save_txt_path)
 
 if __name__ == "__main__":
     main()

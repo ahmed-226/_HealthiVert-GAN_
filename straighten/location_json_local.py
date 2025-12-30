@@ -1,11 +1,28 @@
-#对于本地数据集，查找对应的mask中的label，并对于每个label找到其重心位置作为中心点
-#保存在json文件中；这对于后续的straighten有作用
 
+"""
+Step 0 (Optional): Generate centroid JSON files for each patient
+This script finds the center of mass for each vertebra label in the segmentation mask
+and saves it as a JSON file for use in the straightening process.
+
+Usage:
+    python location_json_local.py --input-dir <path_to_raw_data>
+    
+Expected input structure:
+    input-dir/
+        patient_id/
+            patient_id_seg.nii.gz  (or patient_id_msk.nii.gz)
+            
+Output:
+    input-dir/
+        patient_id/
+            patient_id.json  (contains centroid coordinates for each vertebra)
+"""
 
 import json
 import nibabel as nib
 import numpy as np
 import os
+import argparse
 
 def load_nifti_data(file_path):
     nii = nib.load(file_path)
@@ -15,9 +32,21 @@ def calculate_center_of_mass(data, label):
     center = np.mean(np.where(data == label), axis=1)
     return center # Reverse the order to match X, Y, Z
 
-def process_directory(root_dir):
-
-    for base_filename in os.listdir(root_dir):
+def process_directory(root_dir, sample_limit=None):
+    """
+    Process all patient folders to generate centroid JSON files.
+    
+    Args:
+        root_dir: Root directory containing patient folders
+        sample_limit: If set, only process this many patient folders (for testing)
+    """
+    all_folders = [f for f in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, f))]
+    
+    if sample_limit is not None:
+        all_folders = all_folders[:sample_limit]
+        print(f"[Sample Test Mode] Processing only {len(all_folders)} patient folders")
+    
+    for base_filename in all_folders:
         
         #if base_filename!='0020':
         #    continue
@@ -52,6 +81,20 @@ def process_directory(root_dir):
         with open(json_path, 'w') as f:
             json.dump(json_data, f, indent=4)
 
-root_dir =  '/mnt/g/local_dataset/preprocessed/local'
-#root_dir =  '/mnt/g/six_local_dataset/local'
-process_directory(root_dir)
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Generate centroid JSON files for vertebra segmentation masks')
+    parser.add_argument('--input-dir', type=str, required=True,
+                        help='Path to directory containing patient folders with segmentation masks')
+    parser.add_argument('--min-voxels-top', type=int, default=8000,
+                        help='Minimum voxels for topmost vertebra (default: 8000)')
+    parser.add_argument('--min-voxels-bottom', type=int, default=6000,
+                        help='Minimum voxels for bottommost vertebra (default: 6000)')
+    parser.add_argument('--sample-test', type=int, default=None,
+                        help='Sample test mode: process only N patient folders (for pipeline testing)')
+    return parser.parse_args()
+
+
+if __name__ == '__main__':
+    args = parse_args()
+    process_directory(args.input_dir, sample_limit=args.sample_test)

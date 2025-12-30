@@ -1,3 +1,6 @@
 datasets/
 heatmap/
 __pycache__/
+other/
+venv/
+verse19/
