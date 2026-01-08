@@ -44,12 +44,23 @@ def evaluate_svm(filepath, features, output_txt='evaluation_results.txt'):
     data = pd.read_excel(filepath)
     train_test_data = data[data['Dataset'].isin(['train', 'test'])]
     val_data = data[data['Dataset'] == 'val']
+    
+    # Check if validation data exists
+    if val_data.empty:
+        print("⚠️  No validation data found (Dataset='val'). Using 80/20 train/test split instead.")
+        from sklearn.model_selection import train_test_split
+        
+        # Split the data
+        train_test_data, val_data = train_test_split(
+            data, test_size=0.2, random_state=42, stratify=data['Label']
+        )
+        print(f"   Split: {len(train_test_data)} training, {len(val_data)} validation samples")
 
     # 准备输入和标签
-    X_train_test = train_test_data[features]
-    y_train_test = train_test_data['Label']
-    X_val = val_data[features]
-    y_val = val_data['Label']
+    X_train_test = train_test_data[features].values  # Convert to numpy
+    y_train_test = train_test_data['Label'].values   # Convert to numpy
+    X_val = val_data[features].values                # Convert to numpy
+    y_val = val_data['Label'].values                 # Convert to numpy
 
     # 数据标准化
     scaler = StandardScaler()
@@ -59,23 +70,45 @@ def evaluate_svm(filepath, features, output_txt='evaluation_results.txt'):
     # 初始化 SVM 分类器
     svm_classifier = SVC(kernel='linear', class_weight='balanced')
 
-    # 设置五折交叉验证
-    skf = StratifiedKFold(n_splits=5)
+    # 设置五折交叉验证 (reduce folds if necessary)
+    n_splits = min(5, min(np.bincount(y_train_test)))  # Adjust folds based on smallest class
+    if n_splits < 2:
+        print(f"⚠️  Insufficient data for cross-validation (smallest class has {n_splits} samples)")
+        print("   Performing single train/test evaluation instead")
+        n_splits = 1
+    
+    if n_splits == 1:
+        # Single evaluation without cross-validation
+        svm_classifier.fit(X_train_test_scaled, y_train_test)
+        y_pred_val = svm_classifier.predict(X_val_scaled)
+        cm = confusion_matrix(y_val, y_pred_val)
+        f1 = f1_score(y_val, y_pred_val, average='macro', zero_division=0)
+        precision = precision_score(y_val, y_pred_val, average='macro', zero_division=0)
+        recall = recall_score(y_val, y_pred_val, average='macro', zero_division=0)
+        accuracy = accuracy_score(y_val, y_pred_val)
+        
+        results = [(cm, f1, precision, recall, accuracy)]
+        f1_list = [f1]
+        precision_list = [precision]
+        recall_list = [recall]
+        accuracy_list = [accuracy]
+    else:
+        skf = StratifiedKFold(n_splits=n_splits)
+        
+        # 存储每次验证的结果
+        results = []
+        f1_list, precision_list, recall_list, accuracy_list = [], [], [], []
 
-    # 存储每次验证的结果
-    results = []
-    f1_list, precision_list, recall_list, accuracy_list = [], [], [], []
-
-    for train_index, test_index in skf.split(X_train_test_scaled, y_train_test):
-        X_train, X_test = X_train_test_scaled[train_index], X_train_test_scaled[test_index]
-        y_train, y_test = y_train_test[train_index], y_train_test[test_index]
+        for train_index, test_index in skf.split(X_train_test_scaled, y_train_test):
+            X_train, X_test = X_train_test_scaled[train_index], X_train_test_scaled[test_index]
+            y_train, y_test = y_train_test[train_index], y_train_test[test_index]
         
         svm_classifier.fit(X_train, y_train)
         y_pred_val = svm_classifier.predict(X_val_scaled)
         cm = confusion_matrix(y_val, y_pred_val)
-        f1 = f1_score(y_val, y_pred_val, average='macro')
-        precision = precision_score(y_val, y_pred_val, average='macro')
-        recall = recall_score(y_val, y_pred_val, average='macro')
+        f1 = f1_score(y_val, y_pred_val, average='macro', zero_division=0)
+        precision = precision_score(y_val, y_pred_val, average='macro', zero_division=0)
+        recall = recall_score(y_val, y_pred_val, average='macro', zero_division=0)
         accuracy = accuracy_score(y_val, y_pred_val)
         
         results.append((cm, f1, precision, recall, accuracy))

@@ -30,7 +30,7 @@ def remove_small_connected_components(input_array, min_size):
     return input_array
 
 
-class AlignedDataset(BaseDataset):
+class AlignedSagittalDataset(BaseDataset):
     """A dataset class for paired image dataset.
 
     It assumes that the directory '/path/to/data/train' contains image pairs in the form of {A,B}.
@@ -75,13 +75,15 @@ class AlignedDataset(BaseDataset):
                     self.abnormal_vert_dict[patient_id] = [vert_id]
                 else:
                     self.abnormal_vert_dict[patient_id].append(vert_id)
-            if opt.vert_class=="normal":
-                self.vertebra_id = np.array(self.normal_vert_list)
-            elif opt.vert_class=="abnormal":
-                self.vertebra_id = np.array(self.abnormal_vert_list)
-            else:
-                print("No vert class is set.")
-                self.vertebra_id = None
+        
+        # Set vertebra_id based on vert_class (AFTER the loop completes)
+        if opt.vert_class=="normal":
+            self.vertebra_id = np.array(self.normal_vert_list)
+        elif opt.vert_class=="abnormal":
+            self.vertebra_id = np.array(self.abnormal_vert_list)
+        else:
+            print("No vert class is set.")
+            self.vertebra_id = None
     
         #self.dir_AB = os.path.join(opt.dataroot, opt.phase)  # get the image directory
         self.dir_AB = opt.dataroot
@@ -164,12 +166,17 @@ class AlignedDataset(BaseDataset):
         # Use cam_folder from options instead of hardcoded path
         CAM_folder = getattr(self.opt, 'cam_folder', './heatmaps')
 
-        CAM_path_0 = os.path.join(CAM_folder, self.vertebra_id[index]+'_0.nii.gz')
-        CAM_path_1 = os.path.join(CAM_folder, self.vertebra_id[index]+'_1.nii.gz')
-        if not os.path.exists(CAM_path_0):
-            CAM_path = CAM_path_1
-        else:
-            CAM_path = CAM_path_0
+        # Try without suffix first (our generated heatmaps)
+        CAM_path = os.path.join(CAM_folder, self.vertebra_id[index]+'.nii.gz')
+        
+        # Fallback to _0 or _1 suffix if file doesn't exist (legacy format)
+        if not os.path.exists(CAM_path):
+            CAM_path_0 = os.path.join(CAM_folder, self.vertebra_id[index]+'_0.nii.gz')
+            CAM_path_1 = os.path.join(CAM_folder, self.vertebra_id[index]+'_1.nii.gz')
+            if os.path.exists(CAM_path_0):
+                CAM_path = CAM_path_0
+            elif os.path.exists(CAM_path_1):
+                CAM_path = CAM_path_1
         
         # Handle case where CAM file doesn't exist (use zeros)
         if os.path.exists(CAM_path):

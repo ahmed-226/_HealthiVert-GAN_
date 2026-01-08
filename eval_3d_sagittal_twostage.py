@@ -242,22 +242,36 @@ def process_nii_files(folder_path,CAM_folder, model, output_folder, device):
             
 
 def main():
-    model_path = '/home/zhangqi/Project/pytorch-CycleGAN-and-pix2pix-master/checkpoints/0421_adaptive_sagittal/latest_net_G.pth'
+    # UPDATED PATHS FOR YOUR PROJECT
+    model_path = 'verse19/checkpoints/healthivert_full/5_net_G.pth'  # Your trained model
     netG_params = {'input_dim': 1, 'ngf': 16}
-    #folder_path = '/home/zhangqi/Project/pytorch-CycleGAN-and-pix2pix-master/datasets/straighten/revised/CT'
-    #CAM_folder = '/home/zhangqi/Project/VertebralFractureGrading/heatmap/straighten_sagittal/binaryclass_1'
-    #output_folder = '/home/zhangqi/Project/pytorch-CycleGAN-and-pix2pix-master/output_3d/sagittal/fine'
-    folder_path = '/home/zhangqi/Project/pytorch-CycleGAN-and-pix2pix-master/datasets/local/straighten/CT'
-    CAM_folder = '/home/zhangqi/Project/VertebralFractureGrading/heatmap/local_sagittal_0508/binaryclass_1'
-    output_folder = '/home/zhangqi/Project/pytorch-CycleGAN-and-pix2pix-master/output_3d/local_dataset/sagittal/fine'
+    
+    # Input folders
+    folder_path = 'verse19/straighten/CT'  # Straightened CT volumes
+    CAM_folder = 'verse19/straighten/heatmap'  # Grad-CAM heatmaps
+    
+    # Output folder - will create 3D reconstructed volumes here
+    output_folder = 'verse19/results/healthivert_full/train_5/output'
+    
     if not os.path.exists(output_folder+'/CT_fake'):
         os.makedirs(output_folder+'/CT_fake')
     if not os.path.exists(output_folder+'/label_fake'):
         os.makedirs(output_folder+'/label_fake')
-    device = 'cuda:0'
+    
+    # Use CPU if CUDA not available
+    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+    print(f"Using device: {device}")
+    print(f"Model path: {model_path}")
+    print(f"Input CT folder: {folder_path}")
+    print(f"CAM folder: {CAM_folder}")
+    print(f"Output folder: {output_folder}")
 
     model = load_model(model_path, netG_params, device)
     process_nii_files(folder_path,CAM_folder, model, output_folder, device)
+    
+    print(f"\n✅ 3D Reconstruction Complete!")
+    print(f"   Generated volumes saved to: {output_folder}/CT_fake/")
+    print(f"   Generated labels saved to: {output_folder}/label_fake/")
 
 if __name__ == "__main__":
     main()

@@ -169,6 +169,11 @@ if __name__ == '__main__':
     dataset_size = len(dataset)    # get the number of images in the dataset.
     print('The number of training images = %d' % dataset_size)
     
+    # Apply sample test limit if specified
+    sample_test_limit = getattr(opt, 'sample_test', None)
+    if sample_test_limit is not None:
+        print(f'[Sample Test Mode] Training limited to {sample_test_limit} iterations')
+    
     # test setting
     opt_test = TestOptions().parse()  # get test options
     opt_test.batch_size = 5    # test code only supports batch_size = 1
@@ -196,6 +201,15 @@ if __name__ == '__main__':
             epoch_iter += opt.batch_size
             model.set_input(data)         # unpack data from dataset and apply preprocessing
             model.optimize_parameters()   # calculate loss functions, get gradients, update network weights
+
+            # Check if sample test limit reached
+            if sample_test_limit is not None and total_iters >= sample_test_limit:
+                print(f'\n[Sample Test Mode] Reached iteration limit ({sample_test_limit}). Stopping training.')
+                print('Saving final model...')
+                model.save_networks('latest')
+                model.save_networks(f'sample_test_{sample_test_limit}')
+                print('Training completed successfully!')
+                exit(0)
 
             if total_iters % opt.display_freq == 0:   # display images on visdom and save images to a HTML file
                 save_result = total_iters % opt.update_html_freq == 0

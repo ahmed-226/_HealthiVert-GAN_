@@ -61,7 +61,9 @@ class BaseOptions():
         # HealthiVert-specific parameters (previously hardcoded)
         parser.add_argument('--vertebra_json', type=str, default='./vertebra_data.json', help='path to vertebra_data.json file with train/val/test splits')
         parser.add_argument('--cam_folder', type=str, default='./heatmaps', help='path to folder containing Grad-CAM heatmaps')
-        parser.add_argument('--vert_class', type=str, default='abnormal', help='vertebra class to use [normal | abnormal]')
+        parser.add_argument('--vert_class', type=str, default='normal', help='vertebra class to use [normal | abnormal]')
+        parser.add_argument('--sample-test', type=int, default=None, help='limit training to N iterations for testing the pipeline')
+
         
         # wandb parameters
         parser.add_argument('--use_wandb', action='store_true', help='if specified, then init wandb logging')

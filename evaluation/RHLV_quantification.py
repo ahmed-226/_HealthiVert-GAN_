@@ -248,27 +248,62 @@ def main():
     if not os.path.exists(args.result_folder):
         os.makedirs(args.result_folder)
     
-    # Process each experiment folder
-    for root, dirs, files in os.walk(args.output_folder):
-        for dir_name in dirs:
-            exp_folder = os.path.join(root, dir_name)
-            fake_folder = os.path.join(exp_folder, 'label_fake')
-            
-            if not os.path.exists(fake_folder):
-                print(f"Skipping {dir_name}: no label_fake folder found")
-                continue
+    # FIXED: Handle both directory structures
+    # Check if output_folder directly contains CT volumes or has subdirectories
+    output_folder = args.output_folder
+    
+    # If output_folder ends with 'CT_fake', use parent folder
+    if output_folder.endswith('CT_fake'):
+        output_folder = os.path.dirname(output_folder)
+        print(f"Detected CT_fake in path, using parent folder: {output_folder}")
+    
+    # Check if label_fake exists directly in output_folder
+    direct_label_fake = os.path.join(output_folder, 'label_fake')
+    if os.path.exists(direct_label_fake):
+        # Direct structure: output_folder contains CT_fake and label_fake directly
+        print(f"Processing direct structure: {output_folder}")
+        result_file = os.path.join(args.result_folder, 'results.xlsx')
+        print(f"  Input labels: {args.label_folder}")
+        print(f"  Generated labels: {direct_label_fake}")
+        print(f"  Output file: {result_file}")
+        
+        process_datasets_to_excel(
+            json_data, 
+            args.label_folder, 
+            direct_label_fake, 
+            result_file, 
+            length_divisor=args.length_divisor, 
+            height_threshold=args.height_threshold
+        )
+        print(f"✅ Saved RHLV results to: {result_file}")
+    else:
+        # Original nested structure: walk through subdirectories
+        print(f"Processing nested structure in: {output_folder}")
+        found_experiments = False
+        for root, dirs, files in os.walk(output_folder):
+            for dir_name in dirs:
+                exp_folder = os.path.join(root, dir_name)
+                fake_folder = os.path.join(exp_folder, 'label_fake')
                 
-            result_file = os.path.join(args.result_folder, dir_name + '.xlsx')
-            print(f"Processing experiment: {dir_name}")
-            process_datasets_to_excel(
-                json_data, 
-                args.label_folder, 
-                fake_folder, 
-                result_file, 
-                length_divisor=args.length_divisor, 
-                height_threshold=args.height_threshold
-            )
-            print(f"  Saved results to: {result_file}")
+                if not os.path.exists(fake_folder):
+                    continue
+                
+                found_experiments = True
+                result_file = os.path.join(args.result_folder, dir_name + '.xlsx')
+                print(f"Processing experiment: {dir_name}")
+                process_datasets_to_excel(
+                    json_data, 
+                    args.label_folder, 
+                    fake_folder, 
+                    result_file, 
+                    length_divisor=args.length_divisor, 
+                    height_threshold=args.height_threshold
+                )
+                print(f"  Saved results to: {result_file}")
+        
+        if not found_experiments:
+            print(f"❌ No label_fake folders found in {output_folder}")
+            print(f"   Please check your output folder structure")
 
 if __name__ == "__main__":
     main()
