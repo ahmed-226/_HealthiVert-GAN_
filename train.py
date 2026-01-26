@@ -174,11 +174,16 @@ if __name__ == '__main__':
     if sample_test_limit is not None:
         print(f'[Sample Test Mode] Training limited to {sample_test_limit} iterations')
     
-    # test setting
-    opt_test = TestOptions().parse()  # get test options
-    opt_test.batch_size = 5    # test code only supports batch_size = 1
+    # test setting - create test options by copying relevant settings from training options
+    # We create a copy of the training options and modify it for testing
+    import copy
+    opt_test = copy.deepcopy(opt)
+    # Modify test-specific settings
+    opt_test.batch_size = 5    # test code supports batch_size > 1
     opt_test.serial_batches = True
     opt_test.phase = "test"
+    opt_test.num_threads = 0  # Test code works better with 0 threads
+    opt_test.isTrain = False
     dataset_test = create_dataset(opt_test)  # create a dataset given opt.dataset_mode and other options
 
     model = create_model(opt)      # create a model given opt.model and other options

@@ -234,7 +234,7 @@ def process_and_save_nii(dataroot, output_folder, grad_cam, target_class=1, samp
 def parse_args():
     parser = argparse.ArgumentParser(description='Generate Grad-CAM++ attention heatmaps for HGAM module')
     parser.add_argument('--ckpt-path', type=str, default=None,
-                        help='Path to classifier checkpoint file (.tar). If not provided with --use-untrained, will use random weights.')
+                        help='Path to classifier checkpoint file (.tar or .pkl). If not provided with --use-untrained, will use random weights.')
     parser.add_argument('--dataroot', type=str, required=True,
                         help='Path to straightened CT data folder')
     parser.add_argument('--output-folder', type=str, required=True,
@@ -263,7 +263,29 @@ if __name__ == '__main__':
     if args.ckpt_path and not args.use_untrained:
         print(f"Loading checkpoint from: {args.ckpt_path}")
         checkpoint = torch.load(args.ckpt_path, map_location=torch.device('cuda', args.gpu))
-        model.load_state_dict(checkpoint['state_dict'])
+        
+        # Handle different checkpoint formats
+        if args.ckpt_path.endswith('.tar'):
+            # .tar format typically contains a dictionary with 'state_dict' key
+            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['state_dict'])
+            else:
+                # Fallback: try loading directly
+                model.load_state_dict(checkpoint)
+        elif args.ckpt_path.endswith('.pkl'):
+            # .pkl format typically contains the state_dict directly
+            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['state_dict'])
+            else:
+                # Assume it's a direct state_dict
+                model.load_state_dict(checkpoint)
+        else:
+            # Try to auto-detect format
+            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['state_dict'])
+            else:
+                model.load_state_dict(checkpoint)
+        
         print("Checkpoint loaded successfully.")
     elif args.use_untrained:
         print("WARNING: Using untrained model. Heatmaps will be random/meaningless!")

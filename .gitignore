@@ -1,6 +1,8 @@
 datasets/
 heatmap/
 __pycache__/
-other/
+others/
 venv/
 verse19/
+cls_checkpoints/
+Segmentation/
