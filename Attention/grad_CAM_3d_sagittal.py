@@ -51,30 +51,20 @@ class GradCam:
     def register_hooks(self):
         def forward_hook(module, input, output):
             self.features = output
-            #print("Features captured:", self.features is not None)
 
         def backward_hook(module, grad_in, grad_out):
-            #print(f'grad_in:{grad_in[0].size()}')
             self.gradients = grad_out[0]
-            #print(grad_out[0])
-            #print("Gradients captured:", self.gradients is not None)
 
         # 获取目标层
         for name, module in self.model.named_modules():
-            #print(name)
             if name == self.feature_layer:
-                #print(f'Find it:{name}')
                 module.register_forward_hook(forward_hook)
                 module.register_full_backward_hook(backward_hook)
-            #else:
-            #    print("No feature_layer")
 
     def generate_cam(self, input_image, target_class):
         output = self.model(input_image)
         if isinstance(output, tuple):
-            print("output is tuple")
-            output = output[0]  # 如果模型返回多个输出，则只取第一个
-            #print(output)
+            output = output[0]
 
         # 获取目标类别的得分
         score = output[:, target_class]
@@ -94,8 +84,7 @@ class GradCam:
         heatmap = F.relu(heatmap)
         heatmap /= torch.max(heatmap)
 
-        # 可以将热力图进行后处理，如调整大小和叠加到原始图像上
-        return heatmap.cpu().numpy()  # 根据需要转换为适合可视化的格式
+        return heatmap.cpu().numpy()
 
 
 class GradCamPlusPlus(GradCam):
@@ -111,31 +100,29 @@ class GradCamPlusPlus(GradCam):
         self.model.zero_grad()
         score.backward(retain_graph=True)
 
-        gradients = self.gradients.data  # 这里是获取反向传播的梯度
-        # 计算二阶导数和三阶导数的中间项
+        gradients = self.gradients.data
         gradient_power_2 = gradients**2
         gradient_power_3 = gradients**3
 
-        # 计算alpha和权重
         global_sum = torch.sum(self.features.data, dim=[2, 3], keepdim=True)
         alpha_num = gradient_power_2
         alpha_denom = 2 * gradient_power_2 + global_sum * gradient_power_3 + 1e-7
         alpha = alpha_num / alpha_denom
         alpha = alpha.where(alpha_denom != 0, torch.zeros_like(alpha))
 
-        positive_gradients = F.relu(score.exp() * gradients)  # 使用ReLU来确保只考虑正的影响
+        positive_gradients = F.relu(score.exp() * gradients)
         weights = (alpha * positive_gradients).sum(dim=[2, 3], keepdim=True)
 
-        # 根据权重和特征图计算Grad-CAM++
         cam = (weights * self.features.data).sum(dim=1, keepdim=True)
-        cam = F.relu(cam)  # 应用ReLU
+        cam = F.relu(cam)
         cam = cam - torch.min(cam)
-        cam = cam / torch.max(cam).data  # 归一化
+        cam = cam / torch.max(cam).data
 
-        cam = cam.squeeze()  # 去除单维度
-        heatmap = cam.cpu().detach().numpy()  # 转换为NumPy数组以便可视化
+        cam = cam.squeeze()
+        heatmap = cam.cpu().detach().numpy()
 
         return heatmap
+
     
 def get_img_with_preprocess(img, transform):
     img_arr = img.get_fdata()
@@ -153,7 +140,8 @@ def get_img_with_preprocess(img, transform):
         output_imgs.append(output_img)
         output_tensors.append(output_tensor.unsqueeze(0))
 
-    return output_imgs, torch.cat(output_tensors, 0)  # 返回图像列表和张量堆栈
+    return output_imgs, torch.cat(output_tensors, 0)
+
     
 def apply_heatmap_to_grayscale_and_save(heatmap, image, save_path, alpha=0.4, colormap=cv2.COLORMAP_JET):
     # 确保image是float32类型
@@ -171,7 +159,7 @@ def apply_heatmap_to_grayscale_and_save(heatmap, image, save_path, alpha=0.4, co
     heatmap = cv2.applyColorMap(heatmap, colormap)
 
     # 叠加热力图与原图
-    superimposed_img = heatmap * alpha + img_color  # 调整因alpha叠加需要
+    superimposed_img = heatmap * alpha + img_color
     superimposed_img = superimposed_img / np.max(superimposed_img) * 255
     superimposed_img = np.uint8(superimposed_img)
     
@@ -180,13 +168,66 @@ def apply_heatmap_to_grayscale_and_save(heatmap, image, save_path, alpha=0.4, co
     print(f"Image saved to {save_path}")
 
 
-def process_and_save_nii(dataroot, output_folder, grad_cam, target_class=1, sample_limit=None):
-    folder_path = Path(os.path.join(dataroot, 'CT'))
-    if not os.path.exists(os.path.join(dataroot, 'CT')):
-        folder_path = Path(os.path.join(dataroot, 'test'))
-    if not os.path.exists(os.path.join(dataroot, 'test')):
-        folder_path = Path(dataroot)
-    nii_files = list(folder_path.rglob('*.nii.gz'))
+def find_ct_folder(dataroot):
+    """
+    Intelligently find the CT folder regardless of input path.
+    Handles: /path/to/CT, /path/to/straighten, /path/to/straighten/CT
+    """
+    dataroot = Path(dataroot).resolve()
+    
+    print(f"[Path Detection] Input: {dataroot}")
+    
+    # Case 1: User passed .../straighten/CT directly
+    if dataroot.name == 'CT' and dataroot.parent.name == 'straighten':
+        print(f"[Path Detection] Found CT folder (Case 1): {dataroot}")
+        return dataroot
+    
+    # Case 2: User passed .../straighten
+    if dataroot.name == 'straighten' and (dataroot / 'CT').exists():
+        ct_path = dataroot / 'CT'
+        print(f"[Path Detection] Found CT folder (Case 2): {ct_path}")
+        return ct_path
+    
+    # Case 3: User passed root dataset folder
+    if (dataroot / 'straighten' / 'CT').exists():
+        ct_path = dataroot / 'straighten' / 'CT'
+        print(f"[Path Detection] Found CT folder (Case 3): {ct_path}")
+        return ct_path
+    
+    # Case 4: User passed .../CT directly (any level)
+    if dataroot.name == 'CT' and dataroot.exists():
+        print(f"[Path Detection] Found CT folder (Case 4): {dataroot}")
+        return dataroot
+    
+    # Fallback: Try to find CT folder recursively
+    for ct_candidate in dataroot.rglob('CT'):
+        if ct_candidate.is_dir() and any(ct_candidate.glob('*.nii.gz')):
+            print(f"[Path Detection] Found CT folder (Case 5 - recursive): {ct_candidate}")
+            return ct_candidate
+    
+    # If nothing found, raise error
+    raise FileNotFoundError(
+        f"Cannot find CT folder in: {dataroot}\n"
+        f"Expected one of:\n"
+        f"  - {dataroot}/CT\n"
+        f"  - {dataroot}/straighten/CT\n"
+        f"  - {dataroot}/straighten/CT (if dataroot is root)\n"
+        f"Please ensure the path contains straightened CT files."
+    )
+
+
+
+def process_and_save_nii(ct_folder, output_folder, grad_cam, target_class=1, sample_limit=None):
+    """
+    Process all NIfTI files in ct_folder and save heatmaps.
+    """
+    ct_folder = Path(ct_folder)
+    nii_files = sorted(list(ct_folder.glob('*.nii.gz')))
+    
+    if not nii_files:
+        raise FileNotFoundError(f"No .nii.gz files found in {ct_folder}")
+    
+    print(f"[Processing] Found {len(nii_files)} NIfTI files")
     
     # Apply sample limit if specified
     if sample_limit is not None and sample_limit < len(nii_files):
@@ -198,37 +239,61 @@ def process_and_save_nii(dataroot, output_folder, grad_cam, target_class=1, samp
         transforms.ToTensor()
     ])
 
-    for img_nii in nii_files:
-        filename = img_nii.stem.split('.')[0]
-        img_nii = nib.load(str(img_nii))
+    for idx, img_nii_path in enumerate(nii_files, 1):
+        print(f"\n[{idx}/{len(nii_files)}] Processing: {img_nii_path.name}")
+        
+        # Extract filename WITHOUT extensions
+        # For "sub-verse004_ct.nii_16.nii.gz", we want "sub-verse004_ct.nii_16"
+        filename = img_nii_path.name
+        # Remove the last .gz
+        filename = filename.replace('.nii.gz', '')
+        # If there's another .nii, remove it too (for cases like .nii.nii.gz)
+        if filename.endswith('.nii'):
+            filename = filename.replace('.nii', '')
+        
+        print(f"[Filename] {filename}")
+        
+        img_nii = nib.load(str(img_nii_path))
         img_arr = img_nii.get_fdata()
+        
+        # Validate image
+        if img_arr.shape[2] < 30:  # Not enough slices
+            print(f"[Warning] Image has only {img_arr.shape[2]} slices, may have issues")
+        
         image_raw_list, input_tensor = get_img_with_preprocess(img_nii, transform)
         input_tensor = input_tensor.cuda(0, non_blocking=True).float()
 
-        heatmap_3d = np.zeros(img_nii.get_fdata().shape)  # 初始化三维热力图数组
-
-        # 处理中间30层
+        # Initialize 3D heatmap array
+        heatmap_3d = np.zeros(img_nii.get_fdata().shape)
+        
         z_center = int(img_nii.shape[2] / 2)
         start_slice = max(0, z_center - 15)
         end_slice = min(img_nii.shape[2], z_center + 15)
+        
+        print(f"[Slices] Processing slices {start_slice} to {end_slice} (center={z_center})")
+        
         for i, slice_idx in enumerate(range(start_slice, end_slice)):
-            input_slice = input_tensor[i:i+1]  # 获取当前层的输入张量
-            heatmap = grad_cam.generate_cam(input_slice, target_class)  # 生成当前层的热力图
-            heatmap_resized = cv2.resize(heatmap, (img_nii.shape[0], img_nii.shape[1]))  # 调整热力图大小
+            input_slice = input_tensor[i:i+1]
+            heatmap = grad_cam.generate_cam(input_slice, target_class)
+            heatmap_resized = cv2.resize(heatmap, (img_nii.shape[0], img_nii.shape[1]))
             heatmap_3d[:, :, slice_idx] = heatmap_resized
 
-        # 保存为NIfTI格式
+        # Save as NIfTI format
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
+        
         save_path = os.path.join(output_folder, filename + '.nii.gz')
         new_img_nii = nib.Nifti1Image(heatmap_3d, img_nii.affine, img_nii.header)
         nib.save(new_img_nii, save_path)
-        print(f"NIfTI saved to {save_path}")
-        # 保存中间层作为演示效果图
+        print(f"[Saved] NIfTI: {save_path}")
+        
+        # Save visualization
         imgsave_path = os.path.join(output_folder, filename + '.png')
-
-        apply_heatmap_to_grayscale_and_save(heatmap_3d[:,:,z_center],img_arr[:,:,z_center],imgsave_path)
-    
+        apply_heatmap_to_grayscale_and_save(
+            heatmap_3d[:, :, z_center], 
+            img_arr[:, :, z_center], 
+            imgsave_path
+        )
 
 
 def parse_args():
@@ -236,7 +301,7 @@ def parse_args():
     parser.add_argument('--ckpt-path', type=str, default=None,
                         help='Path to classifier checkpoint file (.tar or .pkl). If not provided with --use-untrained, will use random weights.')
     parser.add_argument('--dataroot', type=str, required=True,
-                        help='Path to straightened CT data folder')
+                        help='Path to straightened CT data folder (can be /path/to/CT, /path/to/straighten, or /path/to/dataset)')
     parser.add_argument('--output-folder', type=str, required=True,
                         help='Path to output folder for heatmaps')
     parser.add_argument('--target-class', type=int, default=1,
@@ -266,21 +331,16 @@ if __name__ == '__main__':
         
         # Handle different checkpoint formats
         if args.ckpt_path.endswith('.tar'):
-            # .tar format typically contains a dictionary with 'state_dict' key
             if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['state_dict'])
             else:
-                # Fallback: try loading directly
                 model.load_state_dict(checkpoint)
         elif args.ckpt_path.endswith('.pkl'):
-            # .pkl format typically contains the state_dict directly
             if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['state_dict'])
             else:
-                # Assume it's a direct state_dict
                 model.load_state_dict(checkpoint)
         else:
-            # Try to auto-detect format
             if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['state_dict'])
             else:
@@ -298,7 +358,19 @@ if __name__ == '__main__':
     target_layers = [model.module.layer4[-1]]
     grad_cam = GradCamPlusPlus(model=model, feature_layer="module.layer4.2.conv1.conv")
     
+    # Find CT folder automatically
+    try:
+        ct_folder = find_ct_folder(args.dataroot)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}")
+        exit(1)
+    
     # Process and save
-    process_and_save_nii(args.dataroot, args.output_folder, grad_cam, 
+    print(f"\n{'='*60}")
+    print(f"Starting Grad-CAM heatmap generation")
+    print(f"{'='*60}")
+    process_and_save_nii(ct_folder, args.output_folder, grad_cam, 
                          target_class=args.target_class, sample_limit=args.sample_test)
-    print(f"Heatmaps saved to: {args.output_folder}")
+    print(f"\n{'='*60}")
+    print(f"✅ Heatmaps saved to: {args.output_folder}")
+    print(f"{'='*60}")

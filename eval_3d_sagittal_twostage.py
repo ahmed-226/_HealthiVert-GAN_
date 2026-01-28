@@ -12,6 +12,7 @@ from models.inpaint_networks import Generator
 import torch.nn.functional as F
 import math
 from scipy.ndimage import label
+import argparse
 
 def remove_small_connected_components(input_array, min_size):
 
@@ -241,37 +242,52 @@ def process_nii_files(folder_path,CAM_folder, model, output_folder, device):
             count+=1
             
 
-def main():
-    # UPDATED PATHS FOR YOUR PROJECT
-    model_path = 'verse19/checkpoints/healthivert_full/5_net_G.pth'  # Your trained model
-    netG_params = {'input_dim': 1, 'ngf': 16}
-    
-    # Input folders
-    folder_path = 'verse19/straighten/CT'  # Straightened CT volumes
-    CAM_folder = 'verse19/straighten/heatmap'  # Grad-CAM heatmaps
-    
-    # Output folder - will create 3D reconstructed volumes here
-    output_folder = 'verse19/results/healthivert_full/train_5/output'
-    
-    if not os.path.exists(output_folder+'/CT_fake'):
-        os.makedirs(output_folder+'/CT_fake')
-    if not os.path.exists(output_folder+'/label_fake'):
-        os.makedirs(output_folder+'/label_fake')
-    
-    # Use CPU if CUDA not available
-    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-    print(f"Using device: {device}")
-    print(f"Model path: {model_path}")
-    print(f"Input CT folder: {folder_path}")
-    print(f"CAM folder: {CAM_folder}")
-    print(f"Output folder: {output_folder}")
+def parse_args():
+    parser = argparse.ArgumentParser(description='3D vertebra reconstruction with two-stage generation')
+    parser.add_argument('--model-path', type=str, required=True,
+                        help='Path to trained model checkpoint (.pth file)')
+    parser.add_argument('--ct-folder', type=str, required=True,
+                        help='Path to input CT folder (e.g., verse19/straighten/CT)')
+    parser.add_argument('--cam-folder', type=str, required=True,
+                        help='Path to Grad-CAM heatmap folder')
+    parser.add_argument('--output-folder', type=str, required=True,
+                        help='Path to output folder for generated volumes')
+    parser.add_argument('--gpu', type=int, default=0,
+                        help='GPU device ID (default: 0, use -1 for CPU)')
+    parser.add_argument('--ngf', type=int, default=16,
+                        help='Number of generator filters (default: 16)')
+    return parser.parse_args()
 
-    model = load_model(model_path, netG_params, device)
-    process_nii_files(folder_path,CAM_folder, model, output_folder, device)
+def main():
+    args = parse_args()
+    
+    # Model parameters
+    netG_params = {'input_dim': 1, 'ngf': args.ngf}
+    
+    # Create output directories
+    if not os.path.exists(os.path.join(args.output_folder, 'CT_fake')):
+        os.makedirs(os.path.join(args.output_folder, 'CT_fake'))
+    if not os.path.exists(os.path.join(args.output_folder, 'label_fake')):
+        os.makedirs(os.path.join(args.output_folder, 'label_fake'))
+    
+    # Setup device
+    if args.gpu >= 0 and torch.cuda.is_available():
+        device = f'cuda:{args.gpu}'
+    else:
+        device = 'cpu'
+    
+    print(f"Using device: {device}")
+    print(f"Model path: {args.model_path}")
+    print(f"Input CT folder: {args.ct_folder}")
+    print(f"CAM folder: {args.cam_folder}")
+    print(f"Output folder: {args.output_folder}")
+
+    model = load_model(args.model_path, netG_params, device)
+    process_nii_files(args.ct_folder, args.cam_folder, model, args.output_folder, device)
     
     print(f"\n✅ 3D Reconstruction Complete!")
-    print(f"   Generated volumes saved to: {output_folder}/CT_fake/")
-    print(f"   Generated labels saved to: {output_folder}/label_fake/")
+    print(f"   Generated volumes saved to: {os.path.join(args.output_folder, 'CT_fake')}")
+    print(f"   Generated labels saved to: {os.path.join(args.output_folder, 'label_fake')}")
 
 if __name__ == "__main__":
     main()
