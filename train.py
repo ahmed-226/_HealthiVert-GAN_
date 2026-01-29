@@ -192,6 +192,12 @@ if __name__ == '__main__':
     model.setup(opt)               # regular setup: load and print networks; create schedulers
     visualizer = Visualizer(opt)   # create a visualizer that display/save images and plots
     total_iters = 0                # the total number of training iterations
+    
+    # ===== UPDATED: Initialize best model tracking =====
+    best_ssim = 0
+    best_epoch = 0
+    best_metrics = {}
+    # ===== END UPDATED SECTION =====
 
     for epoch in range(opt.epoch_count, opt.n_epochs + opt.n_epochs_decay + 1):    # outer loop for different epochs
         epoch_start_time = time.time()  # timer for entire epoch
@@ -256,5 +262,51 @@ if __name__ == '__main__':
             writer.add_scalar('Eval/IoU', avg_iou, epoch)
             writer.add_scalar('Eval/DiffH', avg_diffh, epoch)
             print(f'epoch[{epoch}/{opt.n_epochs + opt.n_epochs_decay + 1}], SSIM: {avg_ssim:.4f}, PSNR: {avg_psnr:.2f}, Dice: {avg_dice:.4f}, IoU: {avg_iou:.4f}, Diffh: {avg_diffh:.2f}')
+            
+            # ===== UPDATED: Track and save best model based on SSIM =====
+            if avg_ssim > best_ssim:
+                best_ssim = avg_ssim
+                best_epoch = epoch
+                best_metrics = {
+                    'epoch': epoch,
+                    'ssim': avg_ssim,
+                    'psnr': avg_psnr,
+                    'dice': avg_dice,
+                    'iou': avg_iou,
+                    'diffh': avg_diffh
+                }
+                print(f'\n✅ NEW BEST MODEL: SSIM {avg_ssim:.4f} at epoch {epoch}')
+                model.save_networks('best_ssim')  # Save best model with special name
+                
+                # Save best model info to file for reference
+                info_path = os.path.join(opt.checkpoints_dir, opt.name, 'best_model_info.txt')
+                with open(info_path, 'w') as f:
+                    f.write(f'Best Epoch: {best_epoch}\n')
+                    f.write(f'Best SSIM: {best_metrics["ssim"]:.4f}\n')
+                    f.write(f'PSNR: {best_metrics["psnr"]:.2f}\n')
+                    f.write(f'Dice: {best_metrics["dice"]:.4f}\n')
+                    f.write(f'IoU: {best_metrics["iou"]:.4f}\n')
+                    f.write(f'DiffH: {best_metrics["diffh"]:.2f}%\n')
+                print(f'   Saved best model info to {info_path}')
+            # ===== END UPDATED SECTION =====
 
         print('End of epoch %d / %d \t Time Taken: %d sec' % (epoch, opt.n_epochs + opt.n_epochs_decay, time.time() - epoch_start_time))
+    
+    # ===== UPDATED: Print final best model information =====
+    print('\n' + '='*80)
+    print('🏆 TRAINING COMPLETED')
+    print('='*80)
+    if best_epoch > 0:
+        print(f'\n✅ Best Model Summary:')
+        print(f'   Epoch: {best_metrics["epoch"]}')
+        print(f'   SSIM: {best_metrics["ssim"]:.4f}')
+        print(f'   PSNR: {best_metrics["psnr"]:.2f} dB')
+        print(f'   Dice: {best_metrics["dice"]:.4f}')
+        print(f'   IoU: {best_metrics["iou"]:.4f}')
+        print(f'   DiffH: {best_metrics["diffh"]:.2f}%')
+        print(f'\n💾 Best model saved as: best_ssim')
+        print(f'   You can test it with: python test.py --epoch best_ssim --name {opt.name}')
+    else:
+        print('⚠️  No evaluation metrics were recorded during training')
+    print('='*80)
+    # ===== END UPDATED SECTION =====

@@ -41,6 +41,20 @@ except ImportError:
 
 if __name__ == '__main__':
     opt = TestOptions().parse()  # get test options
+    
+    # ===== UPDATED: Auto-detect best model if available =====
+    best_model_info_path = os.path.join(opt.checkpoints_dir, opt.name, 'best_model_info.txt')
+    if os.path.exists(best_model_info_path):
+        print('\n🔍 Found best_model_info.txt - Auto-loading best model...')
+        with open(best_model_info_path, 'r') as f:
+            content = f.read()
+            print(f'   {content}')
+            best_epoch_line = content.split('\n')[0]
+            best_epoch = int(best_epoch_line.split(': ')[1])
+        opt.epoch = 'best_ssim'  # Load best model
+        print(f'   ✅ Using best model: best_ssim (from epoch {best_epoch})\n')
+    # ===== END UPDATED SECTION =====
+    
     # hard-code some parameters for test
     opt.num_threads = 0   # test code only supports num_threads = 0
     opt.batch_size = 1    # test code only supports batch_size = 1

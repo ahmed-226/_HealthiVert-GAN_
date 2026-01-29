@@ -1,3 +1,11 @@
+"""
+UPDATED: Added RHDR (Relative Height Difference Ratio) metric calculation
+Original script calculated: global_psnr, global_ssim, patch_psnr, patch_ssim, iou, rv_diff, dice
+Updated script now includes: RHDR metric for height-based evaluation
+
+UPDATED: Added command-line argument parsing for flexible folder paths
+"""
+
 import os
 import nibabel as nib
 import numpy as np
@@ -7,6 +15,7 @@ import json
 import pandas as pd
 from sklearn.model_selection import ParameterGrid
 import math
+import argparse
 
 def calculate_iou(ori_seg, fake_seg):
     intersection = np.sum(ori_seg * fake_seg)
@@ -36,6 +45,33 @@ def relative_volume_difference(ori_seg, fake_seg):
     else:
         return np.abs(volume_ori - volume_fake) / volume_ori
 
+# ===== UPDATED: New function to calculate RHDR (Relative Height Difference Ratio) =====
+def calculate_rhdr(ori_seg, fake_seg):
+    """
+    Calculate Relative Height Difference Ratio (RHDR) based on vertebra height
+    
+    RHDR = (|H_predicted - H_actual| / H_actual) * 100%
+    
+    where H = number of slices where segmentation exists (height in axial direction)
+    
+    Args:
+        ori_seg: Original (ground truth) segmentation volume
+        fake_seg: Generated (predicted) segmentation volume
+    
+    Returns:
+        RHDR value as percentage. Lower is better (closer to healthy vertebra).
+    """
+    # Calculate height = number of unique slices with segmentation
+    ori_height = np.sum(np.any(ori_seg, axis=(0, 1)))  # Count slices in z-direction
+    fake_height = np.sum(np.any(fake_seg, axis=(0, 1)))
+    
+    if ori_height == 0:
+        return 0
+    else:
+        rhdr = (np.abs(ori_height - fake_height) / ori_height) * 100
+        return rhdr
+# ===== END UPDATED SECTION ====
+
 def process_images(ori_ct_path, fake_ct_path, ori_seg_path, fake_seg_path):
     ori_ct = nib.load(ori_ct_path).get_fdata()
     fake_ct = nib.load(fake_ct_path).get_fdata()
@@ -56,6 +92,10 @@ def process_images(ori_ct_path, fake_ct_path, ori_seg_path, fake_seg_path):
     iou_value = calculate_iou(ori_seg, fake_seg)
     dice_value = calculate_dice(ori_seg, fake_seg)
     rv_diff = relative_volume_difference(ori_seg, fake_seg)
+    # UPDATED: Calculate RHDR metric for height-based evaluation
+    rhdr_value = calculate_rhdr(ori_seg, fake_seg)
+    # UPDATED: Calculate RHDR metric for height-based evaluation
+    rhdr_value = calculate_rhdr(ori_seg, fake_seg)
     
     loc = np.where(ori_seg)
     z0 = min(loc[2])
@@ -98,21 +138,41 @@ def process_images(ori_ct_path, fake_ct_path, ori_seg_path, fake_seg_path):
     avg_global_psnr = np.mean(global_psnr_list) if global_psnr_list else 0  # 检查列表是否为空
     avg_global_ssim = np.mean(global_ssim_list) if global_ssim_list else 0  # 检查列表是否为空
 
-
-
-    return avg_global_psnr, avg_global_ssim, avg_patch_psnr, avg_patch_ssim, iou_value, rv_diff, dice_value
+    # UPDATED: Added rhdr_value to return statement
+    return avg_global_psnr, avg_global_ssim, avg_patch_psnr, avg_patch_ssim, iou_value, rv_diff, dice_value, rhdr_value
 
 def average_metrics(lists):
     return np.mean(lists)
 
 def main():
-    ori_ct_folder = '/dssg/home/acct-milesun/zhangqi/Dataset/HealthiVert_straighten/CT'
-    ori_seg_folder = '/dssg/home/acct-milesun/zhangqi/Dataset/HealthiVert_straighten/label'
-    json_path = 'vertebra_data.json'
-    save_folder = "evaluation/generation_metric"
-    output_folder = '/dssg/home/acct-milesun/zhangqi/Project/HealthiVert-GAN_eval/output'
+    # ===== UPDATED: Add command-line argument parsing =====
+    parser = argparse.ArgumentParser(description='Generate evaluation metrics for 3D CT reconstructions')
+    parser.add_argument('--ori-ct-folder', type=str, default='CT', help='Path to original CT folder')
+    parser.add_argument('--ori-seg-folder', type=str, default='label', help='Path to original segmentation folder')
+    parser.add_argument('--fake-ct-folder', type=str, required=True, help='Path to generated CT folder')
+    parser.add_argument('--fake-seg-folder', type=str, required=True, help='Path to generated segmentation folder')
+    parser.add_argument('--json-path', type=str, default='vertebra_data.json', help='Path to vertebra data JSON file')
+    parser.add_argument('--output-folder', type=str, default='evaluation/generation_metric', help='Path to save results')
+    args = parser.parse_args()
+    
+    ori_ct_folder = args.ori_ct_folder
+    ori_seg_folder = args.ori_seg_folder
+    json_path = args.json_path
+    save_folder = args.output_folder
+    fake_ct_folder = args.fake_ct_folder
+    fake_seg_folder = args.fake_seg_folder
+    # ===== END UPDATED SECTION =====
+    
+    print(f"\n📊 Starting evaluation...")
+    print(f"   Original CT: {ori_ct_folder}")
+    print(f"   Original Segmentation: {ori_seg_folder}")
+    print(f"   Generated CT: {fake_ct_folder}")
+    print(f"   Generated Segmentation: {fake_seg_folder}")
+    print(f"   JSON Config: {json_path}\n")
+    
     with open(json_path, 'r') as file:
-       vertebra_set = json.load(file)
+        vertebra_set = json.load(file)
+    
     val_normal_vert = []
     for patient_vert_id in vertebra_set['val'].keys():
         if int(vertebra_set['val'][patient_vert_id]) == 0:
@@ -120,46 +180,71 @@ def main():
 
     if not os.path.exists(save_folder):
         os.makedirs(save_folder)
-        
-    for root, dirs, files in os.walk(output_folder):
-        for dir in dirs:
-            exp_folder = os.path.join(root,dir)
-            fake_seg_folder = os.path.join(exp_folder,'label_fake')
-            fake_ct_folder = os.path.join(exp_folder,'CT_fake')
+    
+    # Initialize metrics lists
+    metrics_lists = {
+        'global_psnr': [], 
+        'global_ssim': [], 
+        'patch_psnr': [], 
+        'patch_ssim': [], 
+        'iou': [], 
+        'rv_diff': [], 
+        'dice': [], 
+        'rhdr': []
+    }
+    count = 0
+    
+    for filename in os.listdir(ori_ct_folder):
+        if filename.endswith(".nii.gz") and filename[:-7] in val_normal_vert:
+            ori_ct_path = os.path.join(ori_ct_folder, filename)
+            fake_ct_path = os.path.join(fake_ct_folder, filename)
+            ori_seg_path = os.path.join(ori_seg_folder, filename)
+            fake_seg_path = os.path.join(fake_seg_folder, filename)
             
-            metrics_lists = {'global_psnr': [], 'global_ssim': [], 'patch_psnr': [], 'patch_ssim': [], 'iou': [], 'rv_diff': [], 'dice':[]}
-            count=0
-            for filename in os.listdir(ori_ct_folder):
-
-                if filename.endswith(".nii.gz") and filename[:-7] in val_normal_vert:
-                    ori_ct_path = os.path.join(ori_ct_folder, filename)
-                    fake_ct_path = os.path.join(fake_ct_folder, filename)
-                    ori_seg_path = os.path.join(ori_seg_folder, filename)
-                    fake_seg_path = os.path.join(fake_seg_folder, filename)
-
-                    global_psnr, global_ssim, patch_psnr, patch_ssim, iou, rv_diff, dice = process_images(
-                        ori_ct_path, fake_ct_path, ori_seg_path, fake_seg_path)
-                    if math.isnan(patch_psnr) or math.isnan(patch_ssim):
-                        print("PSNR or SSIM returned NaN, skipping this set of images.")
-                        continue
-                    if patch_psnr==0 or patch_ssim==0:
-                        print("PSNR or SSIM returned 0, skipping this set of images.")
-                        continue
-                    metrics_lists['global_psnr'].append(global_psnr)
-                    metrics_lists['global_ssim'].append(global_ssim)
-                    metrics_lists['patch_psnr'].append(patch_psnr)
-                    metrics_lists['patch_ssim'].append(patch_ssim)
-                    metrics_lists['iou'].append(iou)
-                    metrics_lists['rv_diff'].append(rv_diff)
-                    metrics_lists['dice'].append(dice)
-                    count+=1
-
-            # 计算总平均
-            avg_metrics = {key: average_metrics(value) for key, value in metrics_lists.items()}
+            # Check if fake files exist
+            if not os.path.exists(fake_ct_path) or not os.path.exists(fake_seg_path):
+                print(f"⚠️  Skipping {filename}: generated files not found")
+                continue
             
-            with open(os.path.join(save_folder,dir+".txt"), "w") as file:
-                for metric, value in avg_metrics.items():
-                    file.write(f"Average {metric.upper()}: {value}\n")
+            # ===== UPDATED: Unpack rhdr_value from process_images return =====
+            global_psnr, global_ssim, patch_psnr, patch_ssim, iou, rv_diff, dice, rhdr = process_images(
+                ori_ct_path, fake_ct_path, ori_seg_path, fake_seg_path)
+            # ===== END UPDATED SECTION =====
+            
+            if math.isnan(patch_psnr) or math.isnan(patch_ssim):
+                print(f"⚠️  {filename}: PSNR or SSIM returned NaN, skipping")
+                continue
+            if patch_psnr == 0 or patch_ssim == 0:
+                print(f"⚠️  {filename}: PSNR or SSIM returned 0, skipping")
+                continue
+                
+            metrics_lists['global_psnr'].append(global_psnr)
+            metrics_lists['global_ssim'].append(global_ssim)
+            metrics_lists['patch_psnr'].append(patch_psnr)
+            metrics_lists['patch_ssim'].append(patch_ssim)
+            metrics_lists['iou'].append(iou)
+            metrics_lists['rv_diff'].append(rv_diff)
+            metrics_lists['dice'].append(dice)
+            # ===== UPDATED: Append RHDR value to metrics list =====
+            metrics_lists['rhdr'].append(rhdr)
+            # ===== END UPDATED SECTION =====
+            count += 1
+
+    # Calculate average metrics
+    avg_metrics = {key: average_metrics(value) for key, value in metrics_lists.items()}
+    
+    # Save results
+    output_file = os.path.join(save_folder, "evaluation_metrics.txt")
+    with open(output_file, "w") as file:
+        for metric, value in avg_metrics.items():
+            file.write(f"Average {metric.upper()}: {value:.4f}\n")
+    
+    print(f"\n✅ Evaluation Complete!")
+    print(f"   Processed {count} samples")
+    print(f"   Results saved to: {output_file}")
+    print(f"\n📈 Average Metrics:")
+    for metric, value in avg_metrics.items():
+        print(f"   {metric.upper()}: {value:.4f}")
 
 if __name__ == "__main__":
     main()
