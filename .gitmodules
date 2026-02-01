@@ -1,0 +1,3 @@
+[submodule "Segmentation"]
+	path = Segmentation
+	url = https://github.com/ahmed-226/Coarse-to-Fine-Vertebrae-Segmentation.git
