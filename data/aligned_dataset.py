@@ -28,6 +28,30 @@ def remove_small_connected_components(input_array, min_size):
     return input_array
 
 
+def find_file_with_fallback(base_path):
+    """
+    Try to find a file with .nii.gz extension first, then .nii extension.
+    
+    Parameters:
+        base_path (str) -- the base path without extension
+    
+    Returns:
+        str -- the full path if file exists, None otherwise
+    """
+    # Try .nii.gz first
+    path_gz = base_path + '.nii.gz'
+    if os.path.exists(path_gz):
+        return path_gz
+    
+    # Try .nii next
+    path_nii = base_path + '.nii'
+    if os.path.exists(path_nii):
+        return path_nii
+    
+    # File not found
+    return None
+
+
 class AlignedDataset(BaseDataset):
     """A dataset class for paired image dataset.
 
@@ -79,12 +103,51 @@ class AlignedDataset(BaseDataset):
             else:
                 print("No vert class is set.")
                 self.vertebra_id = None
-    
-        #self.dir_AB = os.path.join(opt.dataroot, opt.phase)  # get the image directory
+        
         self.dir_AB = opt.dataroot
-        #self.dir_mask = os.path.join(opt.dataroot,'mask',opt.phase) 
-        #self.AB_paths = sorted(make_dataset(self.dir_AB, opt.max_dataset_size))  # get image paths
-        #self.mask_paths = sorted(make_dataset(self.dir_mask, opt.max_dataset_size)) 
+        
+        # ===== NEW: Quick validation (files only, skip slow tests) =====
+        print(f"\n[Dataset Validation] Scanning {len(self.vertebra_id)} vertebrae for file validity...")
+        valid_vertebrae = []
+        invalid_count = 0
+        
+        for vertebra_id in self.vertebra_id:
+            try:
+                # Quick check: only verify files exist and vertebra is in label
+                ct_base_path = os.path.join(self.dir_AB, "CT", vertebra_id)
+                label_base_path = os.path.join(self.dir_AB, "label", vertebra_id)
+                
+                ct_path = find_file_with_fallback(ct_base_path)
+                label_path = find_file_with_fallback(label_base_path)
+                
+                if not ct_path or not label_path:
+                    invalid_count += 1
+                    continue
+                
+                # Load label and verify vertebra exists
+                label_data = nib.load(label_path).get_fdata()
+                patient_id, vert_id = vertebra_id.rsplit('_', 1)
+                vert_id = int(vert_id)
+                
+                vert_label = np.zeros_like(label_data)
+                vert_label[label_data == vert_id] = 1
+                
+                if np.sum(vert_label) > 0:
+                    valid_vertebrae.append(vertebra_id)
+                else:
+                    invalid_count += 1
+                    
+            except Exception as e:
+                invalid_count += 1
+        
+        self.vertebra_id = np.array(valid_vertebrae)
+        
+        if invalid_count > 0:
+            print(f"[Dataset Validation] ✅ Valid: {len(self.vertebra_id)} | ❌ Skipped: {invalid_count}")
+        else:
+            print(f"[Dataset Validation] ✅ All {len(self.vertebra_id)} vertebrae are valid")
+        # ===== END NEW SECTION =====
+        
         assert(self.opt.load_size >= self.opt.crop_size)   # crop_size should be smaller than the size of loaded image
         self.input_nc = self.opt.output_nc if self.opt.direction == 'BtoA' else self.opt.input_nc
         self.output_nc = self.opt.input_nc if self.opt.direction == 'BtoA' else self.opt.output_nc
@@ -161,20 +224,26 @@ class AlignedDataset(BaseDataset):
         # Use cam_folder from options instead of hardcoded path
         CAM_folder = getattr(self.opt, 'cam_folder', './heatmaps')
 
-        CAM_path_0 = os.path.join(CAM_folder, self.vertebra_id[index]+'_0.nii.gz')
-        CAM_path_1 = os.path.join(CAM_folder, self.vertebra_id[index]+'_1.nii.gz')
-        CAM_path = CAM_path_0
-        if not os.path.exists(CAM_path_0):
-            CAM_path = CAM_path_1
-        if not os.path.exists(CAM_path_1):
-            CAM_path = os.path.join(CAM_folder, self.vertebra_id[index]+'.nii.gz')
+        # Try without suffix first (our generated heatmaps)
+        CAM_base_path = os.path.join(CAM_folder, self.vertebra_id[index])
+        CAM_path = find_file_with_fallback(CAM_base_path)
+        
+        # Fallback to _0 or _1 suffix if file doesn't exist (legacy format)
+        if not CAM_path:
+            CAM_base_path_0 = os.path.join(CAM_folder, self.vertebra_id[index] + '_0')
+            CAM_path = find_file_with_fallback(CAM_base_path_0)
+        
+        if not CAM_path:
+            CAM_base_path_1 = os.path.join(CAM_folder, self.vertebra_id[index] + '_1')
+            CAM_path = find_file_with_fallback(CAM_base_path_1)
         
         # Handle case where CAM file doesn't exist (use zeros)
-        if os.path.exists(CAM_path):
+        if CAM_path:
             CAM_data = nib.load(CAM_path).get_fdata() * 255
         else:
-            print(f"Warning: CAM file not found: {CAM_path}, using zeros")
-            # Will be set to proper size after loading CT
+            # Try to find any CAM path for warning message
+            CAM_base_path = os.path.join(CAM_folder, self.vertebra_id[index])
+            print(f"Warning: CAM file not found: {CAM_base_path}(.nii.gz/.nii), using zeros")
             CAM_data = None
         #print(CAM_data.max())
 
@@ -183,11 +252,18 @@ class AlignedDataset(BaseDataset):
 
         normal_vert_list = self.normal_vert_dict[patient_id]
 
-
-        ct_path = os.path.join(self.dir_AB,"CT",self.vertebra_id[index]+'.nii.gz')
-
-        label_path = os.path.join(self.dir_AB,"label",self.vertebra_id[index]+'.nii.gz')
-        #mask_path = os.path.join(self.dir_AB,"mask",self.vertebra_id[index]+'.nii.gz')
+        # Find CT and label files with fallback to both .nii.gz and .nii
+        ct_base_path = os.path.join(self.dir_AB, "CT", self.vertebra_id[index])
+        ct_path = find_file_with_fallback(ct_base_path)
+        
+        label_base_path = os.path.join(self.dir_AB, "label", self.vertebra_id[index])
+        label_path = find_file_with_fallback(label_base_path)
+        
+        if not ct_path:
+            raise FileNotFoundError(f"CT file not found: {ct_base_path}(.nii.gz/.nii)")
+        if not label_path:
+            raise FileNotFoundError(f"Label file not found: {label_base_path}(.nii.gz/.nii)")
+        
         ct_data = nib.load(ct_path).get_fdata()
         label_data = nib.load(label_path).get_fdata()
         
@@ -219,7 +295,9 @@ class AlignedDataset(BaseDataset):
             coords = np.argwhere(vert_label[:, :, slice])
             x1, x2 = min(coords[:, 0]), max(coords[:, 0])
         except ValueError as e:
-            print(e)
+            print(f"Error: {e} - Skipping this sample: {self.vertebra_id[index]}")
+            # Return a dummy batch or raise the exception to handle bad data
+            raise RuntimeError(f"Cannot find valid slice for {self.vertebra_id[index]}. The vertebra may be too large or the dataset may be corrupted.")
         width,length = vert_label[:,:,slice].shape
         
         height = x2-x1

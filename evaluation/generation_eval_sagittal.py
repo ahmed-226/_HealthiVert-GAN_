@@ -80,7 +80,16 @@ def process_images(ori_ct_path, fake_ct_path, ori_seg_path, fake_seg_path):
     fake_seg_temp = nib.load(fake_seg_path).get_fdata()
     fake_seg = np.zeros_like(fake_seg_temp)
     
-    label = int(ori_seg_path[:-7].split('_')[-1])
+    # Extract vertebra ID - handle both .nii and .nii.gz formats
+    seg_filename = os.path.basename(ori_seg_path)
+    if seg_filename.endswith('.nii.gz'):
+        base_name = seg_filename[:-7]
+    elif seg_filename.endswith('.nii'):
+        base_name = seg_filename[:-4]
+    else:
+        raise ValueError(f"Unknown file format: {seg_filename}")
+    
+    label = int(base_name.split('_')[-1])
     ori_seg[ori_seg_temp==label] = 1
     fake_seg[fake_seg_temp==label] = 1
 
@@ -195,11 +204,32 @@ def main():
     count = 0
     
     for filename in os.listdir(ori_ct_folder):
-        if filename.endswith(".nii.gz") and filename[:-7] in val_normal_vert:
+        # Support both .nii.gz and .nii file formats
+        if filename.endswith(".nii.gz"):
+            base_name = filename[:-7]
+        elif filename.endswith(".nii"):
+            base_name = filename[:-4]
+        else:
+            continue
+        
+        if base_name in val_normal_vert:
             ori_ct_path = os.path.join(ori_ct_folder, filename)
-            fake_ct_path = os.path.join(fake_ct_folder, filename)
             ori_seg_path = os.path.join(ori_seg_folder, filename)
+            
+            # For fake files, try both formats (.nii.gz and .nii)
+            fake_ct_path = os.path.join(fake_ct_folder, filename)
             fake_seg_path = os.path.join(fake_seg_folder, filename)
+            
+            # If .nii.gz doesn't exist, try .nii
+            if not os.path.exists(fake_ct_path) and filename.endswith('.nii.gz'):
+                fake_ct_alt = os.path.join(fake_ct_folder, base_name + '.nii')
+                if os.path.exists(fake_ct_alt):
+                    fake_ct_path = fake_ct_alt
+            
+            if not os.path.exists(fake_seg_path) and filename.endswith('.nii.gz'):
+                fake_seg_alt = os.path.join(fake_seg_folder, base_name + '.nii')
+                if os.path.exists(fake_seg_alt):
+                    fake_seg_path = fake_seg_alt
             
             # Check if fake files exist
             if not os.path.exists(fake_ct_path) or not os.path.exists(fake_seg_path):

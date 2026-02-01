@@ -134,7 +134,7 @@ def run_model(model,CAM_data,label_data,ct_data,vert_id,index_ratio,A_transform,
     return fake_B_mask_raw,fake_B,height
     
 
-def process_nii_files(folder_path,CAM_folder, model, output_folder, device):
+def process_nii_files(folder_path, CAM_folder, model, output_folder, device, max_samples=None):
     A_transform = transforms.Compose([
         transforms.Grayscale(1),
         transforms.ToTensor(),
@@ -152,31 +152,57 @@ def process_nii_files(folder_path,CAM_folder, model, output_folder, device):
 
     count = 0
     for file_name in os.listdir(folder_path):
-        #if file_name!="sub-verse013_22.nii.gz":
+        # Stop after reaching max_samples limit
+        if max_samples is not None and count >= max_samples:
+            print(f"✅ Reached maximum sample limit ({max_samples}). Stopping processing.")
+            break
+        #if file_name!="sub-verse004_ct.nii_16.nii":
         #    continue
-        if file_name.endswith('.nii.gz'):
+        if file_name.endswith('.nii.gz') or file_name.endswith('.nii'):  # Accept both formats
             if os.path.exists(os.path.join(output_folder, 'CT_fake', file_name)):
                 continue
-            #if file_name!="sub-verse004_20.nii.gz":
-            #    continue
+            
+            # Strip file extension properly
+            if file_name.endswith('.nii.gz'):
+                base_name = file_name[:-7]  # Remove .nii.gz (7 chars)
+            else:
+                base_name = file_name[:-4]  # Remove .nii (4 chars)
+            
+            # Extract vertebra ID from format: sub-verse004_ct.nii_16 or sub-verse004_16
+            try:
+                parts = base_name.rsplit('_', 1)
+                vert_id = int(parts[1])
+                patient_id = parts[0]
+            except (ValueError, IndexError):
+                print(f"⚠️  Skipping {file_name}: cannot parse vertebra ID")
+                continue
+            
             file_path = os.path.join(folder_path, file_name)
             label_path = file_path.replace('CT', 'label')
             ct_nii = nib.load(file_path)
             ct_data = ct_nii.get_fdata()
             label_nii = nib.load(label_path)
             label_data = label_nii.get_fdata()
-            patient_id, vert_id = file_name[:-7].rsplit('_', 1)
-            vert_id = int(vert_id)
 
-            CAM_path_0 = os.path.join(CAM_folder, file_name[:-7]+'_0.nii.gz')
-            CAM_path_1 = os.path.join(CAM_folder, file_name[:-7]+'_1.nii.gz')
-            CAM_path_2 = os.path.join(CAM_folder, file_name[:-7]+'.nii.gz')
-            if os.path.exists(CAM_path_0):
-                CAM_path = CAM_path_0
-            elif os.path.exists(CAM_path_1):
-                CAM_path = CAM_path_1
-            else:
-                CAM_path = CAM_path_2
+            # Build CAM paths - try multiple naming conventions (.nii.gz and .nii)
+            CAM_paths = [
+                os.path.join(CAM_folder, base_name + '_0.nii.gz'),
+                os.path.join(CAM_folder, base_name + '_0.nii'),
+                os.path.join(CAM_folder, base_name + '_1.nii.gz'),
+                os.path.join(CAM_folder, base_name + '_1.nii'),
+                os.path.join(CAM_folder, base_name + '.nii.gz'),
+                os.path.join(CAM_folder, base_name + '.nii'),
+            ]
+            
+            CAM_path = None
+            for path in CAM_paths:
+                if os.path.exists(path):
+                    CAM_path = path
+                    break
+            
+            if CAM_path is None:
+                print(f"⚠️  No CAM file found for {file_name}, skipping...")
+                continue
             
             #print(CAM_path)
             CAM_data = nib.load(CAM_path).get_fdata() * 255
@@ -256,6 +282,8 @@ def parse_args():
                         help='GPU device ID (default: 0, use -1 for CPU)')
     parser.add_argument('--ngf', type=int, default=16,
                         help='Number of generator filters (default: 16)')
+    parser.add_argument('--max-samples', type=int, default=None,
+                        help='Maximum number of samples to process (default: None = all samples)')
     return parser.parse_args()
 
 def main():
@@ -281,9 +309,11 @@ def main():
     print(f"Input CT folder: {args.ct_folder}")
     print(f"CAM folder: {args.cam_folder}")
     print(f"Output folder: {args.output_folder}")
+    if args.max_samples:
+        print(f"Max samples to process: {args.max_samples}")
 
     model = load_model(args.model_path, netG_params, device)
-    process_nii_files(args.ct_folder, args.cam_folder, model, args.output_folder, device)
+    process_nii_files(args.ct_folder, args.cam_folder, model, args.output_folder, device, args.max_samples)
     
     print(f"\n✅ 3D Reconstruction Complete!")
     print(f"   Generated volumes saved to: {os.path.join(args.output_folder, 'CT_fake')}")
