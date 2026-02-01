@@ -30,13 +30,28 @@ def remove_small_connected_components(input_array, min_size):
 
     return input_array
 
-def load_model(model_path, netG_params, device):
-    model = Generator(netG_params, True)
+def load_model(model_path, netG_params, device, model_type='gan'):
+    """
+    Load model checkpoint. Supports both GAN and diffusion models.
+    
+    Args:
+        model_path: Path to checkpoint
+        netG_params: Model configuration
+        device: Device to load model on
+        model_type: 'gan' or 'diffusion'
+    """
+    if model_type == 'diffusion':
+        from models.diffusion_model import create_diffusion_model
+        model = create_diffusion_model(netG_params, use_cuda='cuda' in device)
+    else:
+        # Original GAN model
+        model = Generator(netG_params, True)
+    
     if os.path.exists(model_path):
         model.load_state_dict(torch.load(model_path, map_location=device))
         model.eval()
     model.to(device)
-    return model
+    return model, model_type
 
 def numpy_to_pil(img_np):
     if img_np.dtype != np.uint8:
@@ -44,7 +59,7 @@ def numpy_to_pil(img_np):
     img_pil = Image.fromarray(img_np)
     return img_pil
 
-def run_model(model,CAM_data,label_data,ct_data,vert_id,index_ratio,A_transform,mask_transform,device,maxheight=40):
+def run_model(model,CAM_data,label_data,ct_data,vert_id,index_ratio,A_transform,mask_transform,device,maxheight=40,model_type='gan'):
     vert_label_slice = np.zeros_like(label_data)
     vert_label_slice[label_data==vert_id]=1
     
@@ -99,7 +114,21 @@ def run_model(model,CAM_data,label_data,ct_data,vert_id,index_ratio,A_transform,
     CAM = CAM.unsqueeze(0).to(device)
 
     with torch.no_grad():
-        _, fake_B_mask_sigmoid, _, fake_B_raw, _,_,pred_h = model(ct_batch, mask_batch, 1-CAM,index_ratio)
+        if model_type == 'diffusion':
+            # Diffusion sampling
+            cond_dict = {
+                'masked_ct': ct_batch * (1 - mask_batch),
+                'cam': 1 - CAM,
+                'slice_ratio': index_ratio.view(1, 1, 1, 1).expand(1, 1, 256, 256).float().to(device)
+            }
+            _, fake_B_mask_sigmoid, _, fake_B_raw, _, _, pred_h = model.sample_two_stage(
+                ct_batch, mask_batch, 1-CAM, 
+                index_ratio.view(1, 1, 1, 1).expand(1, 1, 256, 256).float(),
+                batch_size=1
+            )
+        else:
+            # Original GAN forward
+            _, fake_B_mask_sigmoid, _, fake_B_raw, _,_,pred_h = model(ct_batch, mask_batch, 1-CAM,index_ratio)
                     #print(pred_h)
     pred_h = math.ceil(pred_h[0]*maxheight)
 
@@ -120,7 +149,7 @@ def run_model(model,CAM_data,label_data,ct_data,vert_id,index_ratio,A_transform,
     interpolated_image = single_image+ct_upper+ct_bottom
     fake_B = interpolated_image.squeeze().cpu().numpy()
     fake_B = (fake_B+1)*127.5
-    
+    , model_type='gan'
     mid_seg = np.zeros_like(fake_B_mask_raw.squeeze().cpu().numpy())
     mid_seg[x_upper:x_bottom,:] = fake_B_mask_raw[:,:,x_upper:x_bottom,:].squeeze().cpu().numpy()*vert_id
     seg_upper = np.zeros_like(mid_seg)
@@ -193,7 +222,7 @@ def process_nii_files(folder_path,CAM_folder, model, output_folder, device):
             new_z0 = z0 + (range_length - new_range_length) // 2
             new_z1 = new_z0 + new_range_length - 1
 
-            output_ct_data = np.zeros_like(ct_data)
+            output_ct_data = np.zeros_like(ct_data),model_type=model_type
             output_seg_data = np.zeros_like(ct_data)
             center_index = (new_z0 + new_z1) // 2
             
@@ -256,6 +285,8 @@ def parse_args():
                         help='GPU device ID (default: 0, use -1 for CPU)')
     parser.add_argument('--ngf', type=int, default=16,
                         help='Number of generator filters (default: 16)')
+    parser.add_argument('--model-type', type=str, default='gan', choices=['gan', 'diffusion'],
+                        help='Model type: gan or diffusion (default: gan)')
     return parser.parse_args()
 
 def main():
@@ -275,13 +306,14 @@ def main():
         device = f'cuda:{args.gpu}'
     else:
         device = 'cpu'
-    
-    print(f"Using device: {device}")
+    type: {args.model_type}")
     print(f"Model path: {args.model_path}")
     print(f"Input CT folder: {args.ct_folder}")
     print(f"CAM folder: {args.cam_folder}")
     print(f"Output folder: {args.output_folder}")
 
+    model, model_type = load_model(args.model_path, netG_params, device, model_type=args.model_type)
+    process_nii_files(args.ct_folder, args.cam_folder, model, args.output_folder, device, model_type=model_typ
     model = load_model(args.model_path, netG_params, device)
     process_nii_files(args.ct_folder, args.cam_folder, model, args.output_folder, device)
     
