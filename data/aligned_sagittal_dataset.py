@@ -30,6 +30,30 @@ def remove_small_connected_components(input_array, min_size):
     return input_array
 
 
+def find_file_with_fallback(base_path):
+    """
+    Try to find a file with .nii.gz extension first, then .nii extension.
+    
+    Parameters:
+        base_path (str) -- the base path without extension
+    
+    Returns:
+        str -- the full path if file exists, None otherwise
+    """
+    # Try .nii.gz first
+    path_gz = base_path + '.nii.gz'
+    if os.path.exists(path_gz):
+        return path_gz
+    
+    # Try .nii next
+    path_nii = base_path + '.nii'
+    if os.path.exists(path_nii):
+        return path_nii
+    
+    # File not found
+    return None
+
+
 class AlignedSagittalDataset(BaseDataset):
     """A dataset class for paired image dataset.
 
@@ -167,22 +191,25 @@ class AlignedSagittalDataset(BaseDataset):
         CAM_folder = getattr(self.opt, 'cam_folder', './heatmaps')
 
         # Try without suffix first (our generated heatmaps)
-        CAM_path = os.path.join(CAM_folder, self.vertebra_id[index]+'.nii.gz')
+        CAM_base_path = os.path.join(CAM_folder, self.vertebra_id[index])
+        CAM_path = find_file_with_fallback(CAM_base_path)
         
         # Fallback to _0 or _1 suffix if file doesn't exist (legacy format)
-        if not os.path.exists(CAM_path):
-            CAM_path_0 = os.path.join(CAM_folder, self.vertebra_id[index]+'_0.nii.gz')
-            CAM_path_1 = os.path.join(CAM_folder, self.vertebra_id[index]+'_1.nii.gz')
-            if os.path.exists(CAM_path_0):
-                CAM_path = CAM_path_0
-            elif os.path.exists(CAM_path_1):
-                CAM_path = CAM_path_1
+        if not CAM_path:
+            CAM_base_path_0 = os.path.join(CAM_folder, self.vertebra_id[index] + '_0')
+            CAM_path = find_file_with_fallback(CAM_base_path_0)
+        
+        if not CAM_path:
+            CAM_base_path_1 = os.path.join(CAM_folder, self.vertebra_id[index] + '_1')
+            CAM_path = find_file_with_fallback(CAM_base_path_1)
         
         # Handle case where CAM file doesn't exist (use zeros)
-        if os.path.exists(CAM_path):
+        if CAM_path:
             CAM_data = nib.load(CAM_path).get_fdata() * 255
         else:
-            print(f"Warning: CAM file not found: {CAM_path}, using zeros")
+            # Try to find any CAM path for warning message
+            CAM_base_path = os.path.join(CAM_folder, self.vertebra_id[index])
+            print(f"Warning: CAM file not found: {CAM_base_path}(.nii.gz/.nii), using zeros")
             CAM_data = None
         #print(CAM_data.max())
 
@@ -191,11 +218,18 @@ class AlignedSagittalDataset(BaseDataset):
 
         normal_vert_list = self.normal_vert_dict[patient_id]
 
-
-        ct_path = os.path.join(self.dir_AB,"CT",self.vertebra_id[index]+'.nii.gz')
-
-        label_path = os.path.join(self.dir_AB,"label",self.vertebra_id[index]+'.nii.gz')
-        #mask_path = os.path.join(self.dir_AB,"mask",self.vertebra_id[index]+'.nii.gz')
+        # Find CT and label files with fallback to both .nii.gz and .nii
+        ct_base_path = os.path.join(self.dir_AB, "CT", self.vertebra_id[index])
+        ct_path = find_file_with_fallback(ct_base_path)
+        
+        label_base_path = os.path.join(self.dir_AB, "label", self.vertebra_id[index])
+        label_path = find_file_with_fallback(label_base_path)
+        
+        if not ct_path:
+            raise FileNotFoundError(f"CT file not found: {ct_base_path}(.nii.gz/.nii)")
+        if not label_path:
+            raise FileNotFoundError(f"Label file not found: {label_base_path}(.nii.gz/.nii)")
+        
         ct_data = nib.load(ct_path).get_fdata()
         label_data = nib.load(label_path).get_fdata()
         
