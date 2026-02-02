@@ -189,14 +189,25 @@ def calculate_rhlv(segmentation_fake, segmentation_label, center_z, length,verte
 
     return all_rhlv,pre_rhlv,mid_rhlv,post_rhlv,relative_height_label
 
-def process_datasets_to_excel(dataset_info, label_folder, fake_folder, output_file,length_divisor=5, height_threshold=0.64):
+def process_datasets_to_excel(dataset_info, label_folder, fake_folder, output_file, length_divisor=5, height_threshold=0.64):
     results = []
+    processed_count = 0
+    skipped_count = 0
+    
     for dataset_type, data in dataset_info.items():
         for vertebra, label in data.items():
+            # Try both .nii.gz and .nii formats for label
             label_path = os.path.join(label_folder, vertebra + '.nii.gz')
+            if not os.path.exists(label_path):
+                label_path = os.path.join(label_folder, vertebra + '.nii')
+            
+            # Try both .nii.gz and .nii formats for fake
             fake_path = os.path.join(fake_folder, vertebra + '.nii.gz')
+            if not os.path.exists(fake_path):
+                fake_path = os.path.join(fake_folder, vertebra + '.nii')
 
             if not os.path.exists(label_path) or not os.path.exists(fake_path):
+                skipped_count += 1
                 continue
 
             segmentation_label_temp = nib.load(label_path).get_fdata()
@@ -211,16 +222,16 @@ def process_datasets_to_excel(dataset_info, label_folder, fake_folder, output_fi
             
             loc = np.where(segmentation_label)[2]
             if loc.size == 0:
-                continue  # Skip if no label index found
+                skipped_count += 1
+                continue
 
             min_z = np.min(loc)
             max_z = np.max(loc)
             center_z = int(np.mean(loc))
-            length = (max_z - min_z) // length_divisor  # Divisor adjusted based on your setup
-            
+            length = (max_z - min_z) // length_divisor
 
             all_rhlv, pre_rhlv, mid_rhlv, post_rhlv, relative_height_label = calculate_rhlv(
-                segmentation_fake, segmentation_label, center_z, length, vertebra,height_threshold
+                segmentation_fake, segmentation_label, center_z, length, vertebra, height_threshold
             )
             results.append({
                 "Vertebra": vertebra,
@@ -232,10 +243,15 @@ def process_datasets_to_excel(dataset_info, label_folder, fake_folder, output_fi
                 "Post RHLV": post_rhlv,
                 "Relative Height Label": relative_height_label
             })
+            processed_count += 1
 
-    # Create a DataFrame from results and save to Excel
-    df = pd.DataFrame(results)
-    df.to_excel(output_file, index=False)
+    if len(results) > 0:
+        df = pd.DataFrame(results)
+        df.to_excel(output_file, index=False)
+        print(f"\n✅ Processed {processed_count} vertebrae")
+        print(f"⚠️  Skipped {skipped_count} vertebrae")
+    else:
+        print(f"❌ No results - processed: {processed_count}, skipped: {skipped_count}")
 
 def main():
     args = parse_args()
