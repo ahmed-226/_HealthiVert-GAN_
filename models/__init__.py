@@ -16,6 +16,9 @@ In the function <__init__>, you need to define four lists:
 
 Now you can use the model class by specifying flag '--model dummy'.
 See our template model class 'template_model.py' for more details.
+
+Note: Diffusion model support is available via --netG_type diffusion flag.
+This replaces the GAN generator with a DDPM-based diffusion model (HealthiVertDiffusionUNet).
 """
 
 import importlib

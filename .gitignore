@@ -5,3 +5,5 @@ others/
 venv/
 verse19/
 cls_checkpoints/
+logs/
+DOCUMENTATION/

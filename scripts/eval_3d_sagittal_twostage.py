@@ -1,9 +1,12 @@
-#先生成目标椎体上下的椎体，再对目标椎体做生成
+import sys
+import os
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import numpy as np
 import nibabel as nib
-import os
 from options.test_options import TestOptions
 from models import create_model
 import torchvision.transforms as transforms
@@ -17,24 +20,33 @@ import argparse
 def remove_small_connected_components(input_array, min_size):
 
 
-    # 识别连通域
-    structure = np.ones((3, 3), dtype=np.int32)  # 定义连通性结构
+    structure = np.ones((3, 3), dtype=np.int32)  
     labeled, ncomponents = label(input_array, structure)
 
-    # 遍历所有连通域，如果连通域大小小于阈值，则去除
     for i in range(1, ncomponents + 1):
         if np.sum(labeled == i) < min_size:
             input_array[labeled == i] = 0
 
-    # 如果输入是张量，则转换回张量
 
     return input_array
 
-def load_model(model_path, netG_params, device):
-    model = Generator(netG_params, True)
+def load_model(model_path, netG_params, device, model_type='gan'):
+    """Load generator model (GAN or Diffusion)."""
+    if model_type == 'diffusion':
+        from models.diffusion_generator import HealthiVertDiffusionUNet
+        print(f"Loading Diffusion model from {model_path}")
+        model = HealthiVertDiffusionUNet(cnum=32, T=1000)
+    else:
+        print(f"Loading GAN model from {model_path}")
+        model = Generator(netG_params, True)
+    
     if os.path.exists(model_path):
         model.load_state_dict(torch.load(model_path, map_location=device))
-        model.eval()
+        print(f"✓ Model loaded successfully")
+    else:
+        print(f"⚠️  Warning: Model file not found at {model_path}")
+    
+    model.eval()
     model.to(device)
     return model
 
@@ -278,6 +290,8 @@ def parse_args():
                         help='Path to Grad-CAM heatmap folder')
     parser.add_argument('--output-folder', type=str, required=True,
                         help='Path to output folder for generated volumes')
+    parser.add_argument('--model-type', type=str, default='gan', choices=['gan', 'diffusion'],
+                        help='Model type: gan (two-stage GAN) or diffusion (DDPM-based)')
     parser.add_argument('--gpu', type=int, default=0,
                         help='GPU device ID (default: 0, use -1 for CPU)')
     parser.add_argument('--ngf', type=int, default=16,
@@ -305,6 +319,7 @@ def main():
         device = 'cpu'
     
     print(f"Using device: {device}")
+    print(f"Model type: {args.model_type}")
     print(f"Model path: {args.model_path}")
     print(f"Input CT folder: {args.ct_folder}")
     print(f"CAM folder: {args.cam_folder}")
@@ -312,7 +327,7 @@ def main():
     if args.max_samples:
         print(f"Max samples to process: {args.max_samples}")
 
-    model = load_model(args.model_path, netG_params, device)
+    model = load_model(args.model_path, netG_params, device, model_type=args.model_type)
     process_nii_files(args.ct_folder, args.cam_folder, model, args.output_folder, device, args.max_samples)
     
     print(f"\n✅ 3D Reconstruction Complete!")

@@ -4,6 +4,8 @@ from . import networks
 import torch.nn as nn
 from .UnetG_CT_mask import define_G
 from .inpaint_networks import Generator
+from .diffusion_generator import HealthiVertDiffusionUNet
+from .noise_scheduler import DDPMScheduler
 from .edge_operator import edge_loss,Sobel
 import torch.nn.functional as F
 import random
@@ -79,8 +81,13 @@ class Pix2PixModel(BaseModel):
         """
         BaseModel.__init__(self, opt)
         # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_GAN', 'G_maskL1','G_Dice','coarse_Dice','edge',\
-            'D_real_1', 'D_fake_1','D_real_2', 'D_fake_2', 'D_real_3','D_fake_3','h']
+        # Add diffusion loss if using diffusion model
+        if opt.netG_type == 'diffusion':
+            self.loss_names = ['G_GAN', 'G_maskL1','G_Dice','coarse_Dice','edge',\
+                'D_real_1', 'D_fake_1','D_real_2', 'D_fake_2', 'D_real_3','D_fake_3','h','diffusion']
+        else:
+            self.loss_names = ['G_GAN', 'G_maskL1','G_Dice','coarse_Dice','edge',\
+                'D_real_1', 'D_fake_1','D_real_2', 'D_fake_2', 'D_real_3','D_fake_3','h']
         # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
         #self.visual_names = ['real_A','real_A_mask', 'fake_B','fake_B_mask', 'real_B','real_B_mask','mask','fake_edges','real_edges']
         self.visual_names = ['real_A', 'fake_B','fake_B_mask_raw','normal_vert','coarse_seg_binary',\
@@ -99,10 +106,19 @@ class Pix2PixModel(BaseModel):
         #self.netG = define_G(opt.input_nc+2, opt.output_nc, opt.ngf, opt.netG, opt.norm,
         #                              not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
         
-        # using inpainting network
-        netG_params = {'input_dim': 1, 'ngf': 16}
-        self.netG = Generator(netG_params,True)
-        self.netG.cuda()
+        # Generator initialization - conditional on netG_type
+        if opt.netG_type == 'diffusion':
+            print(f'[Diffusion Mode] Using HealthiVertDiffusionUNet with T={opt.diffusion_timesteps}')
+            self.netG = HealthiVertDiffusionUNet(cnum=32, T=opt.diffusion_timesteps)
+            self.noise_scheduler = DDPMScheduler(T=opt.diffusion_timesteps)
+            self.netG = networks.init_net(self.netG, opt.init_type, opt.init_gain, self.gpu_ids)
+            self.is_diffusion = True
+        else:
+            print('[GAN Mode] Using original two-stage Generator')
+            netG_params = {'input_dim': 1, 'ngf': 16}
+            self.netG = Generator(netG_params, True)
+            self.netG.cuda()
+            self.is_diffusion = False
         
         #定义一个边缘提取器
         self.sobel_edge = Sobel(requires_grad=False).to(self.device)
@@ -179,14 +195,36 @@ class Pix2PixModel(BaseModel):
 
     def forward(self):
         """Run forward pass; called by both functions <optimize_parameters> and <test>."""
-        #self.fake_B,self.fake_B_mask_sigmoid = self.netG(torch.cat((self.real_A, self.real_A_mask,self.mask), 1))  # G(A)
-        
-        # 还可以做一个mask的分割任务，用来监督mask区域的生成效果
-
         CAM_temp = 1-self.CAM
-        #print(self.CAM.max())
-        self.coarse_seg_sigmoid,self.fake_B_mask_sigmoid,self.x_stage1,self.fake_B_raw,\
-            self.offset_flow,self.pred1_h,self.pred2_h = self.netG(self.real_A,self.mask,CAM_temp,self.slice_ratio)  # G(A)
+        
+        if self.is_diffusion and self.isTrain:
+            # Diffusion training: add noise to ground truth and predict it
+            B = self.real_B.size(0)
+            device = self.real_B.device
+            
+            # Sample random timesteps
+            t = torch.randint(0, self.noise_scheduler.T, (B,), device=device, dtype=torch.long)
+            
+            # Add noise to ground truth
+            x_t, noise = self.noise_scheduler.add_noise(self.real_B, t)
+            
+            # Forward through diffusion model (outputs pred_noise as x_stage1/x_stage2)
+            self.coarse_seg_sigmoid, self.fake_B_mask_sigmoid, pred_noise_stage1, pred_noise_stage2, \
+                self.offset_flow, self.pred1_h, self.pred2_h = self.netG(x_t, self.mask, CAM_temp, self.slice_ratio, t.float())
+            
+            # Store true noise and predicted noise for loss computation
+            self.true_noise = noise
+            self.pred_noise = pred_noise_stage2  # Use stage 2 output
+            
+            # Reconstruct x_0 from predicted noise
+            self.x_stage1 = self.noise_scheduler.predict_x0_from_eps(x_t, pred_noise_stage1, t)
+            self.fake_B_raw = self.noise_scheduler.predict_x0_from_eps(x_t, pred_noise_stage2, t)
+            
+        else:
+            # GAN mode or diffusion inference
+            t = None if not self.is_diffusion else torch.full((self.real_A.size(0),), self.noise_scheduler.T - 1, device=self.real_A.device, dtype=torch.float32)
+            self.coarse_seg_sigmoid, self.fake_B_mask_sigmoid, self.x_stage1, self.fake_B_raw, \
+                self.offset_flow, self.pred1_h, self.pred2_h = self.netG(self.real_A, self.mask, CAM_temp, self.slice_ratio, t)
         
         self.pred1_h = self.pred1_h.T*self.maxheight
         self.pred2_h = self.pred2_h.T*self.maxheight
@@ -348,9 +386,16 @@ class Pix2PixModel(BaseModel):
         
         self.loss_edge = self.edge_loss(self.fake_edges, self.real_edges,reduction='mean')  * 800
         self.loss_h = torch.mean((abs(self.pred1_h-self.height)/self.height)*40+(abs(self.pred2_h-self.height)/self.height)*40)
-        # combine loss and calculate gradients
-        self.loss_G = self.loss_G_GAN + self.loss_G_maskL1 + self.loss_G_Dice+self.loss_edge+\
-            self.loss_coarse_Dice + self.loss_h
+        
+        # Add diffusion loss if using diffusion model
+        if self.is_diffusion:
+            self.loss_diffusion = F.mse_loss(self.pred_noise, self.true_noise) * 1.0
+            self.loss_G = self.loss_diffusion + self.loss_G_GAN + self.loss_G_maskL1 + self.loss_G_Dice + \
+                self.loss_edge + self.loss_coarse_Dice + self.loss_h
+        else:
+            self.loss_G = self.loss_G_GAN + self.loss_G_maskL1 + self.loss_G_Dice+self.loss_edge+\
+                self.loss_coarse_Dice + self.loss_h
+        
         self.loss_G.backward()
 
     def optimize_parameters(self):
