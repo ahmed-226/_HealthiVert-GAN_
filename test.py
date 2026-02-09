@@ -45,14 +45,37 @@ if __name__ == '__main__':
     # ===== UPDATED: Auto-detect best model if available =====
     best_model_info_path = os.path.join(opt.checkpoints_dir, opt.name, 'best_model_info.txt')
     if os.path.exists(best_model_info_path):
-        print('\n🔍 Found best_model_info.txt - Auto-loading best model...')
-        with open(best_model_info_path, 'r') as f:
-            content = f.read()
-            print(f'   {content}')
-            best_epoch_line = content.split('\n')[0]
-            best_epoch = int(best_epoch_line.split(': ')[1])
-        opt.epoch = 'best_ssim'  # Load best model
-        print(f'   ✅ Using best model: best_ssim (from epoch {best_epoch})\n')
+        print('\n' + '='*80)
+        print('🔍 BEST MODEL DETECTION')
+        print('='*80)
+        print(f'Found best_model_info.txt at: {best_model_info_path}')
+        
+        try:
+            with open(best_model_info_path, 'r') as f:
+                content = f.read()
+                print(f'\nBest Model Info:')
+                print(content)
+                
+                # Parse epoch number
+                for line in content.split('\n'):
+                    if 'Best Epoch:' in line or 'Epoch:' in line:
+                        best_epoch = int(line.split(': ')[1])
+                        break
+                else:
+                    best_epoch = 'unknown'
+            
+            opt.epoch = 'best_ssim'  # Load best model
+            print(f'\n✅ Using best model checkpoint: best_ssim')
+            if best_epoch != 'unknown':
+                print(f'   Trained at epoch: {best_epoch}')
+            print('='*80 + '\n')
+            
+        except Exception as e:
+            print(f'⚠️  WARNING: Could not parse best_model_info.txt: {e}')
+            print(f'   Continuing with --epoch {opt.epoch}')
+            print('='*80 + '\n')
+    else:
+        print(f'\nℹ️  No best_model_info.txt found. Using --epoch {opt.epoch}\n')
     # ===== END UPDATED SECTION =====
     
     # hard-code some parameters for test

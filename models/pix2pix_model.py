@@ -68,6 +68,11 @@ class Pix2PixModel(BaseModel):
         if is_train:
             parser.set_defaults(pool_size=0, gan_mode='vanilla')
             parser.add_argument('--lambda_L1', type=float, default=200.0, help='weight for L1 loss')
+            # FIX: Add missing loss weights based on analysis (Section III-C of paper)
+            parser.add_argument('--lambda_edge', type=float, default=800.0, help='weight for edge loss (current hardcoded: 800)')
+            parser.add_argument('--lambda_height', type=float, default=40.0, help='weight for height restoration loss (current hardcoded: 40)')
+            parser.add_argument('--lambda_dice', type=float, default=15.0, help='weight for fine segmentation Dice loss (current hardcoded: 15)')
+            parser.add_argument('--lambda_coarse_dice', type=float, default=10.0, help='weight for coarse segmentation Dice loss (current hardcoded: 10)')
 
         return parser
 
@@ -341,13 +346,15 @@ class Pix2PixModel(BaseModel):
         #self.loss_G_nonmaskL1 = (self.criterionL1(self.fake_B_raw*(1.-self.mask), self.real_B*(1.-self.mask)) + self.criterionL1(self.x_stage1*(1.-self.mask), self.real_B*(1.-self.mask))) * 0.5 * \
         #    self.opt.lambda_L1
         # Third, Dice loss for mask
-        self.loss_coarse_Dice = (1-diceCoeff(self.coarse_seg_sigmoid,self.normal_vert,activation='none'))*10
+        # FIX: Use configurable loss weights instead of hardcoded values
+        self.loss_coarse_Dice = (1-diceCoeff(self.coarse_seg_sigmoid,self.normal_vert,activation='none')) * self.opt.lambda_coarse_dice
         #self.loss_G_Dice = (1-diceCoeff(self.fake_B_mask_sigmoid*self.mask,self.real_B_mask*self.mask,activation='none'))*10
-        self.loss_G_Dice = (1-diceCoeff(self.fake_B_mask_sigmoid,self.real_B_mask,activation='none'))*15
+        self.loss_G_Dice = (1-diceCoeff(self.fake_B_mask_sigmoid,self.real_B_mask,activation='none')) * self.opt.lambda_dice
         #self.loss_G_Dice_mask = diceCoeff(fake_mask_sigmoid.detach(),self.mask,activation='none')
         
-        self.loss_edge = self.edge_loss(self.fake_edges, self.real_edges,reduction='mean')  * 800
-        self.loss_h = torch.mean((abs(self.pred1_h-self.height)/self.height)*40+(abs(self.pred2_h-self.height)/self.height)*40)
+        self.loss_edge = self.edge_loss(self.fake_edges, self.real_edges,reduction='mean') * self.opt.lambda_edge
+        self.loss_h = torch.mean((abs(self.pred1_h-self.height)/self.height) * self.opt.lambda_height + 
+                                 (abs(self.pred2_h-self.height)/self.height) * self.opt.lambda_height)
         # combine loss and calculate gradients
         self.loss_G = self.loss_G_GAN + self.loss_G_maskL1 + self.loss_G_Dice+self.loss_edge+\
             self.loss_coarse_Dice + self.loss_h

@@ -111,11 +111,44 @@ def evaluate_model(model, test_loader, device, checkpoint_path, iteration):
                 fine_seg_binary_np = fine_seg_binary[i].cpu().numpy()
                 mask = masks[i].cpu().numpy()
                 
-                ssim_score = ssim((ground_truth*mask).squeeze(), (inpainted_result_np*mask).squeeze(), data_range=inpainted_result_np.max() - inpainted_result_np.min(), multichannel=True)
-                ssim_scores.append(ssim_score)
+                # FIX: Extract masked regions for proper comparison
+                gt_masked = (ground_truth * mask).squeeze()
+                pred_masked = (inpainted_result_np * mask).squeeze()
                 
-                image_psnr = psnr((ground_truth*mask).squeeze(), (inpainted_result_np*mask).squeeze(), data_range=inpainted_result_np.max() - ground_truth.min())
-                psnr_scores.append(image_psnr)
+                # FIX: Calculate data_range properly (use consistent min/max)
+                data_range = max(gt_masked.max(), pred_masked.max()) - min(gt_masked.min(), pred_masked.min())
+                
+                # FIX: Add safety check for data_range
+                if data_range < 1e-7:
+                    print(f"⚠️  WARNING: Sample {i} has near-zero data_range ({data_range:.6f}). Skipping metrics.")
+                    continue
+                
+                # FIX: SSIM for single-channel grayscale (removed multichannel=True)
+                try:
+                    ssim_score = ssim(gt_masked, pred_masked, data_range=data_range)
+                    ssim_scores.append(ssim_score)
+                    
+                    # Add warning if SSIM is suspiciously high (potential bug indicator)
+                    if ssim_score > 0.999:
+                        print(f"⚠️  WARNING: Sample {i} has SSIM={ssim_score:.6f} (possibly comparing identical images)")
+                except Exception as e:
+                    print(f"⚠️  ERROR computing SSIM for sample {i}: {e}")
+                    continue
+                
+                # FIX: PSNR with divide-by-zero protection
+                try:
+                    mse = np.mean((gt_masked - pred_masked) ** 2)
+                    if mse < 1e-10:
+                        print(f"⚠️  WARNING: Sample {i} has MSE={mse:.10f} (near-zero, skipping PSNR)")
+                    else:
+                        image_psnr = psnr(gt_masked, pred_masked, data_range=data_range)
+                        psnr_scores.append(image_psnr)
+                        
+                        # Add warning for unrealistic PSNR values
+                        if image_psnr > 60:
+                            print(f"⚠️  WARNING: Sample {i} has PSNR={image_psnr:.2f}dB (suspiciously high)")
+                except Exception as e:
+                    print(f"⚠️  ERROR computing PSNR for sample {i}: {e}")
                 
                 dice_value_coarse = dice_score(torch.tensor(coarse_seg_binary_np).float(), torch.tensor(normal_vert_label).float())
                 dice_scores.append(dice_value_coarse)
@@ -127,11 +160,26 @@ def evaluate_model(model, test_loader, device, checkpoint_path, iteration):
                 Diff_hs.append(Diff_h)
 
         # 计算整个测试集上的评估指标平均值
-        avg_ssim = np.mean(ssim_scores)
-        avg_psnr = np.mean(psnr_scores)
+        # FIX: Add safety checks for empty lists
+        if len(ssim_scores) == 0:
+            print("⚠️  WARNING: No valid SSIM scores computed!")
+            avg_ssim = 0.0
+        else:
+            avg_ssim = np.mean(ssim_scores)
+            print(f"ℹ️  SSIM: mean={avg_ssim:.4f}, min={np.min(ssim_scores):.4f}, max={np.max(ssim_scores):.4f}, std={np.std(ssim_scores):.4f}")
+        
+        if len(psnr_scores) == 0:
+            print("⚠️  WARNING: No valid PSNR scores computed!")
+            avg_psnr = 0.0
+        else:
+            avg_psnr = np.mean(psnr_scores)
+            print(f"ℹ️  PSNR: mean={avg_psnr:.2f}dB, min={np.min(psnr_scores):.2f}dB, max={np.max(psnr_scores):.2f}dB, std={np.std(psnr_scores):.2f}dB")
+            
         avg_dice = np.mean(dice_scores)
         avg_iou = np.mean(iou_scores)
         avg_diffh = np.mean(Diff_hs)
+        
+        print(f"ℹ️  Dice: mean={avg_dice:.4f}, Validated {len(ssim_scores)}/{inputs.size(0)} samples per batch")
         
     model.train()  # 恢复模型到训练模式
     viz_images = torch.stack([inputs, inpainted_result, ground_truths,
@@ -149,6 +197,46 @@ def evaluate_model(model, test_loader, device, checkpoint_path, iteration):
 
 if __name__ == '__main__':
     opt = TrainOptions().parse()   # get training options
+    
+    # ============ CONFIGURATION VALIDATION ============
+    print("\n" + "="*80)
+    print("🔍 CONFIGURATION VALIDATION")
+    print("="*80)
+    
+    # Check training duration (paper uses ~1000 epochs)
+    total_epochs = opt.n_epochs + opt.n_epochs_decay
+    if total_epochs < 200:
+        print(f"⚠️  WARNING: Total epochs = {total_epochs} (paper likely uses 1000+)")
+        print(f"   Your settings: n_epochs={opt.n_epochs}, n_epochs_decay={opt.n_epochs_decay}")
+        print(f"   Consider: --n_epochs 100 --n_epochs_decay 900")
+    else:
+        print(f"✅ Total training epochs: {total_epochs}")
+    
+    # Check loss weights
+    print(f"\n📊 Loss Weights Configuration:")
+    print(f"   lambda_L1: {opt.lambda_L1}")
+    if hasattr(opt, 'lambda_edge'):
+        print(f"   lambda_edge: {opt.lambda_edge} (paper suggests 80-800)")
+    if hasattr(opt, 'lambda_height'):
+        print(f"   lambda_height: {opt.lambda_height} (paper suggests 40-80)")
+    if hasattr(opt, 'lambda_dice'):
+        print(f"   lambda_dice: {opt.lambda_dice}")
+    if hasattr(opt, 'lambda_coarse_dice'):
+        print(f"   lambda_coarse_dice: {opt.lambda_coarse_dice}")
+    
+    # Check GPU configuration
+    num_gpus_requested = len(opt.gpu_ids.split(',')) if isinstance(opt.gpu_ids, str) else len(opt.gpu_ids)
+    if num_gpus_requested > 1:
+        print(f"\n⚠️  Multi-GPU training detected ({num_gpus_requested} GPUs)")
+        print(f"   Paper used single GPU. Multi-GPU may affect batch normalization.")
+        print(f"   Consider: --gpu_ids 0 (single GPU) if results don't match paper")
+    
+    # Check batch size
+    if opt.batch_size != 1:
+        print(f"\nℹ️  Batch size: {opt.batch_size}")
+    
+    print("="*80 + "\n")
+    # ================================================
     
     # ============ MULTI-GPU SETUP ============
     num_gpus = torch.cuda.device_count()
@@ -171,6 +259,20 @@ if __name__ == '__main__':
     dataset = create_dataset(opt)
     dataset_size = len(dataset)
     print('The number of training images = %d' % dataset_size)
+    
+    # ============ DATASET VALIDATION ============
+    print("\n" + "="*80)
+    print("📁 DATASET VALIDATION")
+    print("="*80)
+    if dataset_size < 1000:
+        print(f"⚠️  WARNING: Training set size = {dataset_size}")
+        print(f"   Paper reports 1217 training samples from Verse2019")
+        print(f"   Your dataset may be incomplete or using a subset")
+        print(f"   This will significantly impact model performance!")
+    else:
+        print(f"✅ Training set size: {dataset_size} samples")
+    print("="*80 + "\n")
+    # ============================================
     
     sample_test_limit = getattr(opt, 'sample_test', None)
     if sample_test_limit is not None:

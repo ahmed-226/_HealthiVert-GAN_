@@ -327,7 +327,7 @@ if __name__ == '__main__':
     # Load checkpoint if provided
     if args.ckpt_path and not args.use_untrained:
         print(f"Loading checkpoint from: {args.ckpt_path}")
-        checkpoint = torch.load(args.ckpt_path, map_location=torch.device('cuda', args.gpu))
+        checkpoint = torch.load(args.ckpt_path, map_location=torch.device('cuda', args.gpu), weights_only=False)
         
         # Handle different checkpoint formats
         if args.ckpt_path.endswith('.tar'):
