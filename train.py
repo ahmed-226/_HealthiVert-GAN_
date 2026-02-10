@@ -111,9 +111,44 @@ def evaluate_model(model, test_loader, device, checkpoint_path, iteration):
                 fine_seg_binary_np = fine_seg_binary[i].cpu().numpy()
                 mask = masks[i].cpu().numpy()
                 
-                # FIX: Extract masked regions for proper comparison
-                gt_masked = (ground_truth * mask).squeeze()
-                pred_masked = (inpainted_result_np * mask).squeeze()
+                # ============ MASK INVERSION FIX ============
+                # Debug: Check mask statistics
+                mask_mean = mask.mean()
+                mask_unique = np.unique(mask)
+                
+                if i == 0:  # Print debug info for first sample only
+                    print(f"\n[DEBUG] Mask Analysis for Sample {i}:")
+                    print(f"  Mask shape: {mask.shape}")
+                    print(f"  Mask mean: {mask_mean:.4f}")
+                    print(f"  Mask unique values: {mask_unique}")
+                    print(f"  Mask range: [{mask.min():.4f}, {mask.max():.4f}]")
+                
+                # Detect if mask is inverted
+                # Standard inpainting: mask=0 for hole (vertebra to generate), mask=1 for background (keep)
+                # For evaluation, we want to compare ONLY the generated vertebra (hole)
+                # So if mask_mean > 0.5, the mask is selecting background -> INVERT IT
+                if mask_mean > 0.5:
+                    mask_for_eval = 1.0 - mask
+                    if i == 0:
+                        print(f"  ⚠️  Mask is selecting BACKGROUND (mean={mask_mean:.4f} > 0.5)")
+                        print(f"  ✅ INVERTING mask to select the GENERATED VERTEBRA instead")
+                else:
+                    mask_for_eval = mask
+                    if i == 0:
+                        print(f"  ✅ Mask is selecting HOLE/VERTEBRA (mean={mask_mean:.4f} <= 0.5)")
+                
+                # FIX: Extract masked regions for proper comparison (using corrected mask)
+                gt_masked = (ground_truth * mask_for_eval).squeeze()
+                pred_masked = (inpainted_result_np * mask_for_eval).squeeze()
+                
+                # Additional debug: Check if we're comparing identical regions
+                if i == 0:
+                    mse_debug = np.mean((gt_masked - pred_masked) ** 2)
+                    print(f"  MSE between GT and Pred (masked): {mse_debug:.10f}")
+                    if mse_debug < 1e-7:
+                        print(f"  🚨 CRITICAL: MSE is near-zero! Likely comparing identical images.")
+                        print(f"  This indicates the mask is still selecting the wrong region.")
+                # ============================================
                 
                 # FIX: Calculate data_range properly (use consistent min/max)
                 data_range = max(gt_masked.max(), pred_masked.max()) - min(gt_masked.min(), pred_masked.min())
@@ -121,6 +156,7 @@ def evaluate_model(model, test_loader, device, checkpoint_path, iteration):
                 # FIX: Add safety check for data_range
                 if data_range < 1e-7:
                     print(f"⚠️  WARNING: Sample {i} has near-zero data_range ({data_range:.6f}). Skipping metrics.")
+                    print(f"   This suggests the masked region is empty or constant.")
                     continue
                 
                 # FIX: SSIM for single-channel grayscale (removed multichannel=True)
@@ -131,6 +167,9 @@ def evaluate_model(model, test_loader, device, checkpoint_path, iteration):
                     # Add warning if SSIM is suspiciously high (potential bug indicator)
                     if ssim_score > 0.999:
                         print(f"⚠️  WARNING: Sample {i} has SSIM={ssim_score:.6f} (possibly comparing identical images)")
+                        print(f"   GT masked range: [{gt_masked.min():.4f}, {gt_masked.max():.4f}]")
+                        print(f"   Pred masked range: [{pred_masked.min():.4f}, {pred_masked.max():.4f}]")
+                        print(f"   Mask evaluation type used: {'INVERTED (hole)' if mask_mean > 0.5 else 'DIRECT (hole)'}")
                 except Exception as e:
                     print(f"⚠️  ERROR computing SSIM for sample {i}: {e}")
                     continue
@@ -140,6 +179,7 @@ def evaluate_model(model, test_loader, device, checkpoint_path, iteration):
                     mse = np.mean((gt_masked - pred_masked) ** 2)
                     if mse < 1e-10:
                         print(f"⚠️  WARNING: Sample {i} has MSE={mse:.10f} (near-zero, skipping PSNR)")
+                        print(f"   This indicates GT and Pred are nearly identical in the masked region.")
                     else:
                         image_psnr = psnr(gt_masked, pred_masked, data_range=data_range)
                         psnr_scores.append(image_psnr)
@@ -147,6 +187,7 @@ def evaluate_model(model, test_loader, device, checkpoint_path, iteration):
                         # Add warning for unrealistic PSNR values
                         if image_psnr > 60:
                             print(f"⚠️  WARNING: Sample {i} has PSNR={image_psnr:.2f}dB (suspiciously high)")
+                            print(f"   PSNR > 60dB suggests near-perfect reconstruction (unlikely for GAN).")
                 except Exception as e:
                     print(f"⚠️  ERROR computing PSNR for sample {i}: {e}")
                 
@@ -161,12 +202,25 @@ def evaluate_model(model, test_loader, device, checkpoint_path, iteration):
 
         # 计算整个测试集上的评估指标平均值
         # FIX: Add safety checks for empty lists
+        print("\n" + "="*80)
+        print("📊 EVALUATION SUMMARY")
+        print("="*80)
+        
         if len(ssim_scores) == 0:
             print("⚠️  WARNING: No valid SSIM scores computed!")
             avg_ssim = 0.0
         else:
             avg_ssim = np.mean(ssim_scores)
             print(f"ℹ️  SSIM: mean={avg_ssim:.4f}, min={np.min(ssim_scores):.4f}, max={np.max(ssim_scores):.4f}, std={np.std(ssim_scores):.4f}")
+            
+            # Final validation check
+            if avg_ssim > 0.95:
+                print(f"\n🚨 ALERT: Average SSIM is {avg_ssim:.4f} (>0.95)")
+                print(f"   This is suspiciously high for a GAN model.")
+                print(f"   Possible causes:")
+                print(f"   1. Mask is still inverted (comparing background instead of vertebra)")
+                print(f"   2. Model is copying input instead of generating")
+                print(f"   3. Evaluation code has a bug")
         
         if len(psnr_scores) == 0:
             print("⚠️  WARNING: No valid PSNR scores computed!")
@@ -175,11 +229,19 @@ def evaluate_model(model, test_loader, device, checkpoint_path, iteration):
             avg_psnr = np.mean(psnr_scores)
             print(f"ℹ️  PSNR: mean={avg_psnr:.2f}dB, min={np.min(psnr_scores):.2f}dB, max={np.max(psnr_scores):.2f}dB, std={np.std(psnr_scores):.2f}dB")
             
+            if avg_psnr > 50:
+                print(f"\n🚨 ALERT: Average PSNR is {avg_psnr:.2f}dB (>50dB)")
+                print(f"   This indicates near-perfect reconstruction (very unlikely for GAN).")
+            
         avg_dice = np.mean(dice_scores)
         avg_iou = np.mean(iou_scores)
         avg_diffh = np.mean(Diff_hs)
         
-        print(f"ℹ️  Dice: mean={avg_dice:.4f}, Validated {len(ssim_scores)}/{inputs.size(0)} samples per batch")
+        print(f"ℹ️  Dice: mean={avg_dice:.4f}")
+        print(f"ℹ️  IoU: mean={avg_iou:.4f}")
+        print(f"ℹ️  DiffH: mean={avg_diffh:.2f}%")
+        print(f"\n✅ Validated {len(ssim_scores)} samples (from {inputs.size(0)} per batch)")
+        print("="*80 + "\n")
         
     model.train()  # 恢复模型到训练模式
     viz_images = torch.stack([inputs, inpainted_result, ground_truths,
